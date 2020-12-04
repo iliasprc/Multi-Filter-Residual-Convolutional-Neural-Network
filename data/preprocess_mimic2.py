@@ -1,6 +1,6 @@
 
 import codecs
-from options import args
+from utils.options import args
 from utils import build_vocab, word_embeddings, fasttext_embeddings, gensim_to_fasttext_embeddings, gensim_to_embeddings
 from nltk.tokenize import RegexpTokenizer
 import pandas as pd

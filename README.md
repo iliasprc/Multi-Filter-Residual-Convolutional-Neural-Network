@@ -67,6 +67,9 @@ Run ```python preprocess_mimic3.py``` and ```python preprocess_mimic2.py```.
   python main.py -data_path ./data/mimic3/train_50.csv -vocab ./data/mimic3/vocab.csv -Y 50 -model bert_seq_cls -criterion prec_at_5 -gpu 0 -MAX_LENGTH 512 -bert_dir <your bert dir>
   ```
 
+python main_gan.py -data_path ./data/mimic3/train_50.csv -vocab ./data/mimic3/vocab.csv -Y 50 -model MultiResCNN -embed_file ./data/mimic3/processed_full.embed -criterion prec_at_5 -gpu 0 -tune_wordemb
+
+
 
 Acknowledgement
 -----

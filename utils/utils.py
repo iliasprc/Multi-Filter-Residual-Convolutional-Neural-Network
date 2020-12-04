@@ -595,6 +595,8 @@ class MyDataset(Dataset):
         return len(self.X)
 
     def __getitem__(self, idx):
+        #print(self.X[idx])
+        #print(self.X[idx].keys())
         return self.X[idx]
 
 def pad_sequence(x, max_len, type=np.int):

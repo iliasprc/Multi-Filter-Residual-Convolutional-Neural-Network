@@ -5,8 +5,37 @@ import torch.nn.functional as F
 from torch.nn.init import xavier_uniform_ as xavier_uniform
 from elmo.elmo import Elmo
 import json
-from utils import build_pretrain_embedding, load_embeddings
+from utils.utils import build_pretrain_embedding, load_embeddings
 from math import floor
+
+
+class Mapper(nn.Module):
+    def __init__(self,hidden_size=300,n_classes=50):
+        super(Mapper, self).__init__()
+
+        self.embed = nn.Linear(n_classes,hidden_size)
+
+        xavier_uniform(self.embed.weight)
+    def forward(self,x):
+        return self.embed(x)
+
+class Discriminator(nn.Module):
+    def __init__(self,in_size=50):
+        super(Discriminator, self).__init__()
+
+        self.fc = nn.Linear(in_size,1)
+        self.loss_function = nn.BCEWithLogitsLoss()
+    def forward(self, x,real_fake=True):
+        out = self.fc(x)
+        batch_size = out.shape[0]
+        if real_fake:
+            target = torch.ones(batch_size,1).float().cuda()
+        else:
+            target = torch.zeros(batch_size,1).float().cuda()
+        loss = self.loss_function(out,target)
+
+        return out,loss
+
 
 class WordRep(nn.Module):
     def __init__(self, args, Y, dicts):
@@ -77,12 +106,13 @@ class OutputLayer(nn.Module):
 
 
     def forward(self, x, target, text_inputs):
-
+        #print(f'Inside out layer {x.shape} x.transpose {x.transpose(1, 2).shape}')
         alpha = F.softmax(self.U.weight.matmul(x.transpose(1, 2)), dim=2)
-
+        #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape}')
         m = alpha.matmul(x)
-
+        #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape} self.final.weight.mul(m) {self.final.weight.mul(m).sum(dim=2).shape}')
         y = self.final.weight.mul(m).sum(dim=2).add(self.final.bias)
+        #y = self.final(m.mean(dim=1))
 
         loss = self.loss_function(y, target)
         return y, loss
@@ -259,14 +289,14 @@ class MultiResCNN(nn.Module):
                 one_channel.add_module('resconv-{}'.format(idx), tmp)
 
             self.conv.add_module('channel-{}'.format(filter_size), one_channel)
-
+        self.mapper = Mapper(self.filter_num * args.num_filter_maps, Y)
         self.output_layer = OutputLayer(args, Y, dicts, self.filter_num * args.num_filter_maps)
 
-
+        self.sim = nn.CosineEmbeddingLoss()
     def forward(self, x, target, text_inputs):
-
+        #print(x.shape,text_inputs.shape,target.shape)
         x = self.word_rep(x, target, text_inputs)
-
+        #print(x.shape)
         x = x.transpose(1, 2)
 
         conv_result = []
@@ -280,10 +310,15 @@ class MultiResCNN(nn.Module):
             tmp = tmp.transpose(1, 2)
             conv_result.append(tmp)
         x = torch.cat(conv_result, dim=2)
-
+        embeds = self.mapper(target)
+        #print(embeds.shape)
+        #x_embeds = x.mean(dim=1)
+        #print(x_embeds.shape)
+        #loss_emb = self.sim(x_embeds,embeds,torch.Tensor([1]).cuda())
+        #loss_emb = ((x_embeds-embeds)**2).mean()
         y, loss = self.output_layer(x, target, text_inputs)
-
-        return y, loss
+        #print(f' before output {x.shape} out -> {y.shape} target {target.shape} ')
+        return y, loss#+loss_emb
 
     def freeze_net(self):
         for p in self.word_rep.embed.parameters():
@@ -331,24 +366,25 @@ class Bert_seq_cls(nn.Module):
         pass
 
 
-def pick_model(args, dicts):
+def pick_model_gan(args, dicts):
     Y = len(dicts['ind2c'])
     if args.model == 'CNN':
-        model = CNN(args, Y, dicts)
+        model_g = CNN(args, Y, dicts)
     elif args.model == 'MultiCNN':
-        model = MultiCNN(args, Y, dicts)
+        model_g = MultiCNN(args, Y, dicts)
     elif args.model == 'ResCNN':
-        model = ResCNN(args, Y, dicts)
+        model_g = ResCNN(args, Y, dicts)
     elif args.model == 'MultiResCNN':
-        model = MultiResCNN(args, Y, dicts)
+        model_g = MultiResCNN(args, Y, dicts)
     elif args.model == 'bert_seq_cls':
-        model = Bert_seq_cls(args, Y)
+        model_g = Bert_seq_cls(args, Y)
     else:
         raise RuntimeError("wrong model name")
-
+    model_d = Discriminator(in_size=Y)
     if args.test_model:
         sd = torch.load(args.test_model)
-        model.load_state_dict(sd)
+        model_g.load_state_dict(sd)
     if args.gpu >= 0:
-        model.cuda(args.gpu)
-    return model
+        model_g.cuda(args.gpu)
+        model_d.cuda(args.gpu)
+    return model_g,model_d

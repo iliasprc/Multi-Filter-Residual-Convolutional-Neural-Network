@@ -7,13 +7,13 @@ import csv
 import sys
 from utils.utils import load_lookups, prepare_instance, prepare_instance_bert, MyDataset, my_collate, my_collate_bert, \
     early_stop, save_everything
-from models.models import pick_model
+from models.models_gan import pick_model_gan
 import torch.optim as optim
 from collections import defaultdict
 from torch.utils.data import DataLoader
 import os
 import time
-from tests.train_test import train, test
+from tests.train_gan import train_gan, test_gan
 from pytorch_pretrained_bert import BertAdam
 
 if __name__ == "__main__":
@@ -33,16 +33,18 @@ if __name__ == "__main__":
     print("loading lookups...")
     dicts = load_lookups(args)
 
-    model = pick_model(args, dicts)
-    print(model)
+    model_G,model_d = pick_model_gan(args, dicts)
+    print(model_G)
+    print(model_d)
 
     if not args.test_model:
-        optimizer = optim.Adam(model.parameters(), weight_decay=args.weight_decay, lr=args.lr)
+        optimizer_g = optim.Adam(model_G.parameters(), weight_decay=args.weight_decay, lr=args.lr)
+        optimizer_d = optim.Adam(model_d.parameters(), weight_decay=args.weight_decay, lr=args.lr)
     else:
-        optimizer = None
+        optimizer_g = None
 
     if args.tune_wordemb == False:
-        model.freeze_net()
+        model_G.freeze_net()
 
     metrics_hist = defaultdict(lambda: [])
     metrics_hist_te = defaultdict(lambda: [])
@@ -75,23 +77,23 @@ if __name__ == "__main__":
         dev_loader = None
     test_loader = DataLoader(MyDataset(test_instances), 1, shuffle=False, collate_fn=collate_func)
 
-    if not args.test_model and args.model.find("bert") != -1:
-        param_optimizer = list(model.named_parameters())
-        param_optimizer = [n for n in param_optimizer if 'pooler' not in n[0]]
-        no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
-        optimizer_grouped_parameters = [
-            {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
-             'weight_decay': 0.01},
-            {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-        ]
-
-        num_train_optimization_steps = int(
-            len(train_instances) / args.batch_size + 1) * args.n_epochs
-
-        optimizer = BertAdam(optimizer_grouped_parameters,
-                             lr=args.lr,
-                             warmup=0.1,
-                             t_total=num_train_optimization_steps)
+    # if not args.test_model and args.model.find("bert") != -1:
+    #     param_optimizer = list(model_G.named_parameters())
+    #     param_optimizer = [n for n in param_optimizer if 'pooler' not in n[0]]
+    #     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+    #     optimizer_grouped_parameters = [
+    #         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
+    #          'weight_decay': 0.01},
+    #         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+    #     ]
+    #
+    #     num_train_optimization_steps = int(
+    #         len(train_instances) / args.batch_size + 1) * args.n_epochs
+    #
+    #     optimizer = BertAdam(optimizer_grouped_parameters,
+    #                          lr=args.lr,
+    #                          warmup=0.1,
+    #                          t_total=num_train_optimization_steps)
 
     test_only = args.test_model is not None
 
@@ -105,7 +107,7 @@ if __name__ == "__main__":
 
         if not test_only:
             epoch_start = time.time()
-            losses = train(args, model, optimizer, epoch, args.gpu, train_loader)
+            losses = train_gan(args, model_G,model_d, optimizer_g,optimizer_d, epoch, args.gpu, train_loader)
             loss = np.mean(losses)
             epoch_finish = time.time()
             print("epoch finish in %.2fs, loss: %.4f" % (epoch_finish - epoch_start, loss))
@@ -121,11 +123,11 @@ if __name__ == "__main__":
 
         # test on dev
         evaluation_start = time.time()
-        metrics = test(args, model, args.data_path, fold, args.gpu, dicts, dev_loader)
+        metrics = test_gan(args, model_G, args.data_path, fold, args.gpu, dicts, dev_loader)
         evaluation_finish = time.time()
         print("evaluation finish in %.2fs" % (evaluation_finish - evaluation_start))
         if test_only or epoch == args.n_epochs - 1:
-            metrics_te = test(args, model, args.data_path, "test", args.gpu, dicts, test_loader)
+            metrics_te = test_gan(args, model_G, args.data_path, "test", args.gpu, dicts, test_loader)
         else:
             metrics_te = defaultdict(float)
         metrics_tr = {'loss': loss}
@@ -139,7 +141,7 @@ if __name__ == "__main__":
             metrics_hist_tr[name].append(metrics_all[2][name])
         metrics_hist_all = (metrics_hist, metrics_hist_te, metrics_hist_tr)
 
-        save_everything(args, metrics_hist_all, model, model_dir, None, args.criterion, test_only)
+        save_everything(args, metrics_hist_all, model_G, model_dir, None, args.criterion, test_only)
 
         sys.stdout.flush()
 
@@ -152,7 +154,7 @@ if __name__ == "__main__":
                 print("%s hasn't improved in %d epochs, early stopping..." % (args.criterion, args.patience))
                 test_only = True
                 args.test_model = '%s/model_best_%s.pth' % (model_dir, args.criterion)
-                model = pick_model(args, dicts)
+                model_G = pick_model_gan(args, dicts)
 
 
 

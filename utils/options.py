@@ -2,7 +2,7 @@ import argparse
 import sys
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-MODEL_DIR', type=str, default='./models')
+parser.add_argument('-MODEL_DIR', type=str, default='./checkpoints')
 parser.add_argument('-DATA_DIR', type=str, default='./data')
 parser.add_argument('-MIMIC_3_DIR', type=str, default='./data/mimic3')
 parser.add_argument('-MIMIC_2_DIR', type=str, default='./data/mimic2')

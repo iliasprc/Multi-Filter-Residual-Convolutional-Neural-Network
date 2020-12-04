@@ -1,9 +1,9 @@
 
 import pandas as pd
-from collections import Counter, defaultdict
+from collections import Counter
 import csv
 import operator
-from options import args
+from utils.options import args
 from utils import build_vocab, word_embeddings, fasttext_embeddings, gensim_to_fasttext_embeddings, gensim_to_embeddings, \
     reformat, write_discharge_summaries, concat_data, split_data
 

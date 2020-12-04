@@ -1,7 +1,7 @@
 
 import torch
 import numpy as np
-from utils import all_metrics, print_metrics
+from utils.utils import all_metrics, print_metrics
 
 def train(args, model, optimizer, epoch, gpu, data_loader):
 
@@ -20,6 +20,7 @@ def train(args, model, optimizer, epoch, gpu, data_loader):
         if args.model.find("bert") != -1:
 
             inputs_id, segments, masks, labels = next(data_iter)
+            print('adadad')
 
             inputs_id, segments, masks, labels = torch.LongTensor(inputs_id), torch.LongTensor(segments), \
                                                  torch.LongTensor(masks), torch.FloatTensor(labels)
@@ -106,3 +107,7 @@ def test(args, model, data_path, fold, gpu, dicts, data_loader):
     print_metrics(metrics)
     metrics['loss_%s' % fold] = np.mean(losses)
     return metrics
+
+
+
+

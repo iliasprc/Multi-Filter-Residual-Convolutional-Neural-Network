@@ -31,7 +31,6 @@ docutils==0.14
 editdistance==0.5.3
 elasticsearch==7.0.2
 elmoformanylangs==0.0.2
-en-core-web-sm==2.1.0
 et-xmlfile==1.0.1
 flaky==3.5.3
 Flask==1.0.3
