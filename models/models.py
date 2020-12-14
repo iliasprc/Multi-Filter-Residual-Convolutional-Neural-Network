@@ -7,8 +7,121 @@ from elmo.elmo import Elmo
 import json
 from utils.utils import build_pretrain_embedding, load_embeddings
 from math import floor
+import math
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, heads, d_model, dropout=0.1):
+        super().__init__()
+
+        self.d_model = d_model
+        self.d_k = d_model // heads
+        self.h = heads
+
+        self.q_linear = nn.Linear(d_model, d_model)
+        self.v_linear = nn.Linear(d_model, d_model)
+        self.k_linear = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.out = nn.Linear(d_model, d_model)
 
 
+
+    def forward(self, q, k, v, mask=None):
+        bs = q.size(0)
+
+        # perform linear operation and split into h heads
+
+        k = self.k_linear(k).view(bs, -1, self.h, self.d_k)
+        q = self.q_linear(q).view(bs, -1, self.h, self.d_k)
+        v = self.v_linear(v).view(bs, -1, self.h, self.d_k)
+
+        # transpose to get dimensions bs * h * sl * d_model
+
+        k = k.transpose(1, 2)
+        q = q.transpose(1, 2)
+        v = v.transpose(1, 2)  # calculate attention using function we will define next
+        scores = attention(q, k, v, self.d_k, mask, self.dropout)
+
+        # concatenate heads and put through final linear layer
+        concat = scores.transpose(1, 2).contiguous() \
+            .view(bs, -1, self.d_model)
+
+        output = self.out(concat)
+
+        return output
+
+
+def attention(q, k, v, d_k, mask=None, dropout=None):
+    scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
+    if mask is not None:
+        mask = mask.unsqueeze(1)
+        scores = scores.masked_fill(mask == 0, -1e9)
+        scores = F.softmax(scores, dim=-1)
+
+    if dropout is not None:
+        scores = dropout(scores)
+
+    output = torch.matmul(scores, v)
+    return output
+class MultiHeadResCNN(nn.Module):
+
+    def __init__(self, args, Y, dicts):
+        super(MultiHeadResCNN, self).__init__()
+
+        self.word_rep = WordRep(args, Y, dicts)
+
+        self.conv = nn.ModuleList()
+        filter_sizes = args.filter_size.split(',')
+
+        self.filter_num = len(filter_sizes)
+        for filter_size in filter_sizes:
+            filter_size = int(filter_size)
+            one_channel = nn.ModuleList()
+            tmp = nn.Conv1d(self.word_rep.feature_size, self.word_rep.feature_size, kernel_size=filter_size,
+                            padding=int(floor(filter_size / 2)))
+            xavier_uniform(tmp.weight)
+            one_channel.add_module('baseconv', tmp)
+
+            conv_dimension = self.word_rep.conv_dict[args.conv_layer]
+            for idx in range(args.conv_layer):
+                tmp = ResidualBlock(conv_dimension[idx], conv_dimension[idx + 1], filter_size, 1, True,
+                                    args.dropout)
+                one_channel.add_module('resconv-{}'.format(idx), tmp)
+
+            self.conv.add_module('channel-{}'.format(filter_size), one_channel)
+        self.attention = MultiHeadAttention(10,self.filter_num * args.num_filter_maps)
+        self.output_layer = nn.Linear(self.filter_num * args.num_filter_maps,Y)
+
+        self.loss = nn.BCEWithLogitsLoss()
+    def forward(self, x, target, text_inputs):
+        #print(x.shape,text_inputs.shape,target.shape)
+        x = self.word_rep(x, target, text_inputs)
+        #print(x.shape)
+        x = x.transpose(1, 2)
+
+        conv_result = []
+        for conv in self.conv:
+            tmp = x
+            for idx, md in enumerate(conv):
+                if idx == 0:
+                    tmp = torch.tanh(md(tmp))
+                else:
+                    tmp = md(tmp)
+            tmp = tmp.transpose(1, 2)
+            conv_result.append(tmp)
+        x = torch.cat(conv_result, dim=2)
+        x_mh = self.attention(x,x,x)
+        #print(embeds.shape)
+        #x_embeds = x.mean(dim=1)
+        #print(x_embeds.shape)
+        #loss_emb = self.sim(x_embeds,embeds,torch.Tensor([1]).cuda())
+        #loss_emb = ((x_embeds-embeds)**2).mean()
+        y= self.output_layer(x_mh)
+        #print(f' before output {x.shape} out -> {y.shape} target {target.shape} ')
+        return y, self.loss(y,target)#+loss_emb
+
+    def freeze_net(self):
+        for p in self.word_rep.embed.parameters():
+            p.requires_grad = False
 class Mapper(nn.Module):
     def __init__(self,hidden_size=300,n_classes=50):
         super(Mapper, self).__init__()
@@ -90,7 +203,7 @@ class OutputLayer(nn.Module):
 
 
     def forward(self, x, target, text_inputs):
-        print(f'Inside out layer {x.shape} x.transpose {x.transpose(1, 2).shape}')
+        #print(f'Inside out layer {x.shape} x.transpose {x.transpose(1, 2).shape}')
         alpha = F.softmax(self.U.weight.matmul(x.transpose(1, 2)), dim=2)
         #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape}')
         m = alpha.matmul(x)
@@ -301,7 +414,7 @@ class MultiResCNN(nn.Module):
         #loss_emb = self.sim(x_embeds,embeds,torch.Tensor([1]).cuda())
         #loss_emb = ((x_embeds-embeds)**2).mean()
         y, loss = self.output_layer(x, target, text_inputs)
-        print(f' before output {x.shape} out -> {y.shape} target {target.shape} ')
+        #print(f' before output {x.shape} out -> {y.shape} target {target.shape} ')
         return y, loss#+loss_emb
 
     def freeze_net(self):
@@ -360,6 +473,8 @@ def pick_model(args, dicts):
         model = ResCNN(args, Y, dicts)
     elif args.model == 'MultiResCNN':
         model = MultiResCNN(args, Y, dicts)
+    elif args.model =='MultiHeadCNN':
+        model = MultiHeadResCNN(args, Y, dicts)
     elif args.model == 'bert_seq_cls':
         model = Bert_seq_cls(args, Y)
     else:

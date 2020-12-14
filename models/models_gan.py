@@ -8,7 +8,10 @@ import json
 from utils.utils import build_pretrain_embedding, load_embeddings
 from math import floor
 
-
+def init_weights(m):
+    if type(m) == nn.Linear:
+        xavier_uniform(m.weight)
+        m.bias.data.fill_(0.01)
 class Mapper(nn.Module):
     def __init__(self,hidden_size=300,n_classes=50):
         super(Mapper, self).__init__()
@@ -23,18 +26,41 @@ class Discriminator(nn.Module):
     def __init__(self,in_size=50):
         super(Discriminator, self).__init__()
 
-        self.fc = nn.Linear(in_size,1)
-        self.loss_function = nn.BCEWithLogitsLoss()
-    def forward(self, x,real_fake=True):
+        self.fc = nn.Sequential(nn.Linear(in_size,in_size),nn.LeakyReLU(),nn.Dropout(0.5),nn.Linear(in_size,in_size),nn.LeakyReLU(),nn.Dropout(0.5),nn.Linear(in_size,1),nn.LeakyReLU())
+        init_weights(self.fc)
+        # self.loss_function = nn.BCEWithLogitsLoss()
+        # self.loss_function = nn.MSELoss()
+        self.loss_function = self.vanilla
+    def forward(self, x,real=True):
         out = self.fc(x)
         batch_size = out.shape[0]
-        if real_fake:
+        if real:
             target = torch.ones(batch_size,1).float().cuda()
+            loss = self.loss_function(out, False)
+            #loss = - torch.mean(out)
         else:
             target = torch.zeros(batch_size,1).float().cuda()
-        loss = self.loss_function(out,target)
+            loss = self.loss_function(out,True)
+            #loss = torch.mean(out)
 
         return out,loss
+    def vanilla1(self, x, fake=True):
+        eps = 1e-7
+        if fake:
+            return torch.mean(torch.log(eps+1 - torch.sigmoid(x)))
+        else:
+            return torch.mean(torch.log(eps+torch.sigmoid(x)))# - torch.log(1 - torch.sigmoid(x_fake)))
+    def vanilla(self, x, fake=True):
+        eps = 0.0
+        if fake:
+            return torch.mean(eps+1 - torch.sigmoid(x))
+        else:
+            return torch.mean(eps+torch.sigmoid(x))# - torch.log(1 - torch.sigmoid(x_fake)))
+    def wgan_loss(self, x, fake=True):
+        if fake:
+            return torch.mean(x)
+        else:
+            return - torch.mean(x)
 
 
 class WordRep(nn.Module):
@@ -106,7 +132,7 @@ class OutputLayer(nn.Module):
 
 
     def forward(self, x, target, text_inputs):
-        #print(f'Inside out layer {x.shape} x.transpose {x.transpose(1, 2).shape}')
+        print(f'Inside out layer {x.shape} x.transpose {x.transpose(1, 2).shape}')
         alpha = F.softmax(self.U.weight.matmul(x.transpose(1, 2)), dim=2)
         #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape}')
         m = alpha.matmul(x)
@@ -310,7 +336,8 @@ class MultiResCNN(nn.Module):
             tmp = tmp.transpose(1, 2)
             conv_result.append(tmp)
         x = torch.cat(conv_result, dim=2)
-        embeds = self.mapper(target)
+        # embeds = self.mapper(target)
+        # print(embeds.shape)
         #print(embeds.shape)
         #x_embeds = x.mean(dim=1)
         #print(x_embeds.shape)

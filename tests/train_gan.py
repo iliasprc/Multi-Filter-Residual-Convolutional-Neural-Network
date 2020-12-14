@@ -44,15 +44,15 @@ def train_gan(args, model_g,model_d, optimizer_g,optimizer_d, epoch, gpu, data_l
         real_out,real_loss = model_d(labels,True)
 
         _,loss_of_fake = model_d(output,True)
-        loss_g+=loss_of_fake
+        loss_g+=0.1*loss_of_fake
         optimizer_g.zero_grad()
         loss_g.backward()
         optimizer_g.step()
         optimizer_d.zero_grad()
-        (fake_loss+real_loss).backward()
+        (0.5*(fake_loss+real_loss)).backward()
         optimizer_d.step()
         losses.append(loss_g.item())
-        d_loss +=(fake_loss+real_loss).item()
+        d_loss +=(0.5*(fake_loss+real_loss)).item()
         g_loss+=loss_g.item()
         if i %100==0:
             print(f'loss d {d_loss/(i+1):.4f} loss g {g_loss/(i+1):.4f}')
