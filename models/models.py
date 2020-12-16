@@ -2,66 +2,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.init import xavier_uniform_ as xavier_uniform
+from models.dense_models import Dense_CNN,TCN
+import torch.nn.init
 from elmo.elmo import Elmo
 import json
 from utils.utils import build_pretrain_embedding, load_embeddings
 from math import floor
 import math
+from models.transformer_models import MultiHeadAttention,Norm
 
-class MultiHeadAttention(nn.Module):
-    def __init__(self, heads, d_model, dropout=0.1):
-        super().__init__()
-
-        self.d_model = d_model
-        self.d_k = d_model // heads
-        self.h = heads
-
-        self.q_linear = nn.Linear(d_model, d_model)
-        self.v_linear = nn.Linear(d_model, d_model)
-        self.k_linear = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
-        self.out = nn.Linear(d_model, d_model)
-
-
-
-    def forward(self, q, k, v, mask=None):
-        bs = q.size(0)
-
-        # perform linear operation and split into h heads
-
-        k = self.k_linear(k).view(bs, -1, self.h, self.d_k)
-        q = self.q_linear(q).view(bs, -1, self.h, self.d_k)
-        v = self.v_linear(v).view(bs, -1, self.h, self.d_k)
-
-        # transpose to get dimensions bs * h * sl * d_model
-
-        k = k.transpose(1, 2)
-        q = q.transpose(1, 2)
-        v = v.transpose(1, 2)  # calculate attention using function we will define next
-        scores = attention(q, k, v, self.d_k, mask, self.dropout)
-
-        # concatenate heads and put through final linear layer
-        concat = scores.transpose(1, 2).contiguous() \
-            .view(bs, -1, self.d_model)
-
-        output = self.out(concat)
-
-        return output
-
-
-def attention(q, k, v, d_k, mask=None, dropout=None):
-    scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
-    if mask is not None:
-        mask = mask.unsqueeze(1)
-        scores = scores.masked_fill(mask == 0, -1e9)
-        scores = F.softmax(scores, dim=-1)
-
-    if dropout is not None:
-        scores = dropout(scores)
-
-    output = torch.matmul(scores, v)
-    return output
 class MultiHeadResCNN(nn.Module):
 
     def __init__(self, args, Y, dicts):
@@ -78,7 +27,7 @@ class MultiHeadResCNN(nn.Module):
             one_channel = nn.ModuleList()
             tmp = nn.Conv1d(self.word_rep.feature_size, self.word_rep.feature_size, kernel_size=filter_size,
                             padding=int(floor(filter_size / 2)))
-            xavier_uniform(tmp.weight)
+            torch.nn.init.xavier_uniform_(tmp.weight)
             one_channel.add_module('baseconv', tmp)
 
             conv_dimension = self.word_rep.conv_dict[args.conv_layer]
@@ -88,9 +37,11 @@ class MultiHeadResCNN(nn.Module):
                 one_channel.add_module('resconv-{}'.format(idx), tmp)
 
             self.conv.add_module('channel-{}'.format(filter_size), one_channel)
-        self.attention = MultiHeadAttention(10,self.filter_num * args.num_filter_maps)
+        self.attention = MultiHeadAttention(10,self.filter_num * args.num_filter_maps,0.2)
+        self.norm = Norm(self.filter_num * args.num_filter_maps)
+        self.dropout_1 = nn.Dropout(0.2)
         self.output_layer = nn.Linear(self.filter_num * args.num_filter_maps,Y)
-
+        torch.nn.init.xavier_uniform(self.output_layer.weight)
         self.loss = nn.BCEWithLogitsLoss()
     def forward(self, x, target, text_inputs):
         #print(x.shape,text_inputs.shape,target.shape)
@@ -109,13 +60,15 @@ class MultiHeadResCNN(nn.Module):
             tmp = tmp.transpose(1, 2)
             conv_result.append(tmp)
         x = torch.cat(conv_result, dim=2)
-        x_mh = self.attention(x,x,x)
+        x_mh = self.dropout_1(self.attention(x,x,x)) +x
+        x_mh = self.norm(x_mh)
         #print(embeds.shape)
         #x_embeds = x.mean(dim=1)
         #print(x_embeds.shape)
         #loss_emb = self.sim(x_embeds,embeds,torch.Tensor([1]).cuda())
         #loss_emb = ((x_embeds-embeds)**2).mean()
         y= self.output_layer(x_mh)
+        y = torch.mean(y,dim=1)
         #print(f' before output {x.shape} out -> {y.shape} target {target.shape} ')
         return y, self.loss(y,target)#+loss_emb
 
@@ -128,7 +81,7 @@ class Mapper(nn.Module):
 
         self.embed = nn.Linear(n_classes,hidden_size)
 
-        xavier_uniform(self.embed.weight)
+        torch.nn.init.xavier_uniform(self.embed.weight)
     def forward(self,x):
         return self.embed(x)
 
@@ -192,11 +145,11 @@ class OutputLayer(nn.Module):
         super(OutputLayer, self).__init__()
 
         self.U = nn.Linear(input_size, Y)
-        xavier_uniform(self.U.weight)
+        torch.nn.init.xavier_uniform(self.U.weight)
 
 
         self.final = nn.Linear(input_size, Y)
-        xavier_uniform(self.final.weight)
+        torch.nn.init.xavier_uniform(self.final.weight)
 
         self.loss_function = nn.BCEWithLogitsLoss()
 
@@ -226,7 +179,7 @@ class CNN(nn.Module):
 
         self.conv = nn.Conv1d(self.word_rep.feature_size, args.num_filter_maps, kernel_size=filter_size,
                                   padding=int(floor(filter_size / 2)))
-        xavier_uniform(self.conv.weight)
+        torch.nn.init.xavier_uniform(self.conv.weight)
 
         self.output_layer = OutputLayer(args, Y, dicts, args.num_filter_maps)
 
@@ -258,7 +211,7 @@ class MultiCNN(nn.Module):
             filter_size = int(args.filter_size)
             self.conv = nn.Conv1d(self.word_rep.feature_size, args.num_filter_maps, kernel_size=filter_size,
                                   padding=int(floor(filter_size / 2)))
-            xavier_uniform(self.conv.weight)
+            torch.nn.init.xavier_uniform(self.conv.weight)
         else:
             filter_sizes = args.filter_size.split(',')
             self.filter_num = len(filter_sizes)
@@ -267,7 +220,7 @@ class MultiCNN(nn.Module):
                 filter_size = int(filter_size)
                 tmp = nn.Conv1d(self.word_rep.feature_size, args.num_filter_maps, kernel_size=filter_size,
                                       padding=int(floor(filter_size / 2)))
-                xavier_uniform(tmp.weight)
+                torch.nn.init.xavier_uniform(tmp.weight)
                 self.conv.add_module('conv-{}'.format(filter_size), tmp)
 
         self.output_layer = OutputLayer(args, Y, dicts, self.filter_num * args.num_filter_maps)
@@ -376,7 +329,7 @@ class MultiResCNN(nn.Module):
             one_channel = nn.ModuleList()
             tmp = nn.Conv1d(self.word_rep.feature_size, self.word_rep.feature_size, kernel_size=filter_size,
                             padding=int(floor(filter_size / 2)))
-            xavier_uniform(tmp.weight)
+            torch.nn.init.xavier_uniform(tmp.weight)
             one_channel.add_module('baseconv', tmp)
 
             conv_dimension = self.word_rep.conv_dict[args.conv_layer]
@@ -475,6 +428,10 @@ def pick_model(args, dicts):
         model = MultiResCNN(args, Y, dicts)
     elif args.model =='MultiHeadCNN':
         model = MultiHeadResCNN(args, Y, dicts)
+    elif args.model == 'Dense_CNN':
+        model = Dense_CNN(args, Y, dicts)
+    elif args.model =='TCN':
+        model = TCN(args, Y, dicts)
     elif args.model == 'bert_seq_cls':
         model = Bert_seq_cls(args, Y)
     else:
