@@ -4,7 +4,7 @@ from torch import Tensor
 from typing import Any, List, Tuple
 import torch.nn.functional as F
 from collections import OrderedDict
-
+from models.attn import Attn
 import torch.nn.init
 from elmo.elmo import Elmo
 import json
@@ -152,8 +152,10 @@ class MultiScaleAtt(nn.Module):
             filters += [dc]
             print(filters,sum(filters[:-1]))
             self.add_module(f"block{i-2}",DenseBlock(sum(filters[:-1]),filters[i-1],3))
-        self.att = nn.MultiheadAttention(200,1)
-        self.output_layer = OutputLayer(args, Y, dicts,dc)
+        self.att = Attn(200)
+        #self.output_layer = OutputLayer(args, Y, dicts,dc)
+        self.output_layer = nn.Linear( dc,Y)
+        self.loss_function = nn.BCEWithLogitsLoss()
     def forward(self, x, target, text_inputs):
         x = self.word_rep(x, target, text_inputs)
         x = x.transpose(1, 2)
@@ -173,16 +175,18 @@ class MultiScaleAtt(nn.Module):
         #print(x6.shape)
         #x_cat = torch.stack((x1,x2,x3,x4,x5,x6),dim=-1)
         #print(x_cat.shape)
-        x6 = x6.permute(2,0,1)
-        x_cat,_ = self.att(x6,x6,x6)
-        x_cat = x_cat.permute(1,0,2)
+        x6 = x6.permute(0,2,1)
+        attn_weight= self.att(x6)#,x6,x6)
+       # x_cat = x_cat.permute(1,0,2)
+        c = attn_weight.bmm(x6)
         #print(x_cat.shape)
         # out1 , loss1= self.output_layer(x1,target, text_inputs)
         # out2, loss2 = self.output_layer(x2, target, text_inputs)
         # out3, loss3 = self.output_layer(x3, target, text_inputs)
         # out, loss = self.output_layer(x4, target, text_inputs)
         # out, loss = self.output_layer(x5, target, text_inputs)
-        out, loss = self.output_layer(x_cat, target, text_inputs)
+        out = self.output_layer(c)
+        loss = self.loss_function(out,target)
         return out,loss
 
 class MultiScaleAttention(nn.Module):
