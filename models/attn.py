@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 class Attn(nn.Module):
-    def __init__(self,  hidden_size):
+    def __init__(self,method,  hidden_size):
         super(Attn, self).__init__()
-
+        self.method = method
         self.hidden_size = hidden_size
         self.attn = nn.Linear(self.hidden_size , hidden_size)
         self.v = nn.Parameter(torch.rand(hidden_size))
@@ -26,10 +26,17 @@ class Attn(nn.Module):
 
 
         attn_energies = self.score( encoder_outputs)  # compute attention score
+        #print(attn_energies.shape)
 
+        if self.method == 'bmm':
+            attn_w = torch.softmax(attn_energies, dim=-1).unsqueeze(1)
+            out = attn_w.bmm(encoder_outputs).squeeze(1)
+            return  out # normalize with softmax
+        else:
+            attn_w = torch.softmax(attn_energies, dim=-1).unsqueeze(-1)
+            #print(attn_w.shape,encoder_outputs.shape)
+            return attn_w * encoder_outputs
 
-
-        return torch.softmax(attn_energies,dim=-1).unsqueeze(1)  # normalize with softmax
 
     def score(self,  encoder_outputs):
         energy = torch.tanh(self.attn( encoder_outputs))  # [B*T*H]
@@ -38,8 +45,6 @@ class Attn(nn.Module):
         energy = torch.bmm(v, energy)  # [B*1*T]
         return energy.squeeze(1)  # [B*T]
 
-# m = Attn(100)
-# inp = torch.randn(8,1000,100)
-# out = m(inp)
-# c = out.bmm(inp)
-# print(out.shape,c.shape)
+m = Attn('',100)
+inp = torch.randn(8,1000,100)
+out = m(inp)

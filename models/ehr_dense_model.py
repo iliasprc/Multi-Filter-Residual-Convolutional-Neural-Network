@@ -146,19 +146,23 @@ class MultiScaleAtt(nn.Module):
     def __init__(self, args, Y, dicts,K=7):
         super(MultiScaleAtt, self).__init__()
         self.word_rep = WordRep(args, Y, dicts)
+        self.att1 = Attn('',100)
         filters = [100]
         dc =200
         for i in range(2,K+1):
             filters += [dc]
             print(filters,sum(filters[:-1]))
             self.add_module(f"block{i-2}",DenseBlock(sum(filters[:-1]),filters[i-1],3))
-        self.att = Attn(200)
+        self.att = Attn('bmm',200)
         #self.output_layer = OutputLayer(args, Y, dicts,dc)
         self.output_layer = nn.Linear( dc,Y)
         self.loss_function = nn.BCEWithLogitsLoss()
     def forward(self, x, target, text_inputs):
         x = self.word_rep(x, target, text_inputs)
+        x = self.att1(x)
         x = x.transpose(1, 2)
+        #print(x.shape)
+
         x1 = self.block0(x)
         x2 = self.block1(torch.cat((x1,x),dim=1))
 
@@ -176,9 +180,9 @@ class MultiScaleAtt(nn.Module):
         #x_cat = torch.stack((x1,x2,x3,x4,x5,x6),dim=-1)
         #print(x_cat.shape)
         x6 = x6.permute(0,2,1)
-        attn_weight= self.att(x6)#,x6,x6)
+        c = self.att(x6)# +self.att(x1.permute(0,2,1)) + self.att(x2.permute(0,2,1)) + self.att(x3.permute(0,2,1)) + self.att(x4.permute(0,2,1)) + self.att(x5.permute(0,2,1))#,x6,x6)
        # x_cat = x_cat.permute(1,0,2)
-        c = attn_weight.bmm(x6)
+
         #print(x_cat.shape)
         # out1 , loss1= self.output_layer(x1,target, text_inputs)
         # out2, loss2 = self.output_layer(x2, target, text_inputs)
