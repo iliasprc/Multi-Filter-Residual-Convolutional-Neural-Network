@@ -4,7 +4,7 @@ from torch import Tensor
 from typing import Any, List, Tuple
 import torch.nn.functional as F
 from collections import OrderedDict
-from models.tcn import TemporalConvNet
+from models.tcn import TemporalConvNet,TemporalCnn
 import torch.nn.init
 from elmo.elmo import Elmo
 import json
@@ -226,6 +226,7 @@ class DenseNet(nn.Module):
         self.features.add_module('norm5', nn.BatchNorm1d(num_features))
         self.avg_pool = torch.nn.AdaptiveAvgPool1d(1)
         # Linear layer
+        self.final_num_features = num_features
         self.classifier = nn.Linear(num_features, num_classes)
 
         # Official init from torch repo.
@@ -242,12 +243,12 @@ class DenseNet(nn.Module):
         features = self.features(x)
         out = F.relu(features, inplace=True)
 
-        out = self.avg_pool(out)
-
-
-        out = out.squeeze(-1)
-
-        out = self.classifier(out)
+        # out = self.avg_pool(out)
+        #
+        #
+        # out = out.squeeze(-1)
+        #
+        # out = self.classifier(out)
         return out
 
 
@@ -287,7 +288,7 @@ def densenet100(pretrained: bool = False, progress: bool = True,num_classes=50, 
         memory_efficient (bool) - If True, uses checkpointing. Much more memory efficient,
           but slower. Default: *False*. See `"paper" <https://arxiv.org/pdf/1707.06990.pdf>`_.
     """
-    return _densenet('densenet100', 32, (3, 6, 9, 12), 128,num_classes, pretrained, progress,
+    return _densenet('densenet100', 16, (6, 12, 24, 16), 128,num_classes, pretrained, progress,
                      **kwargs)
 
 class OutputLayer(nn.Module):
@@ -320,14 +321,16 @@ class TCN(nn.Module):
     def __init__(self, args, Y, dicts):
         super(TCN,self).__init__()
         self.word_rep = WordRep(args, Y, dicts)
-        self.tcn = TemporalConvNet(100,11*[150])
-        self.output_layer = OutputLayer(args, Y, dicts,150)
+        #self.tcn = TemporalConvNet(100,11*[150])
+        self.tcn = TemporalCnn(100, [100,150,150,200,200,250,250,300,300])
+        self.output_layer = OutputLayer(args, Y, dicts,300)
 
     def forward(self, x, target, text_inputs):
         # print(x.shape,text_inputs.shape,target.shape)
         x = self.word_rep(x, target, text_inputs)
         x = x.transpose(1, 2)
         x = self.tcn(x)
+        #print(x.shape)
         x = x.transpose(1, 2)
         y, loss = self.output_layer(x, target, text_inputs)
 
@@ -338,8 +341,10 @@ class Dense_CNN(nn.Module):
     def __init__(self,args, Y, dicts):
         super(Dense_CNN, self).__init__()
         self.word_rep = WordRep(args, Y, dicts)
-        self.tcn = TemporalConvNet(100,[150,150,150,100])
-        self.cnn = densenet100()
+        #self.tcn = TemporalConvNet(100,[150,150,150,100])
+        self.cnn = densenet121()
+        nf = self.cnn.final_num_features
+        self.output_layer = OutputLayer(args, Y, dicts, nf)
         self.loss = nn.BCEWithLogitsLoss()
 
     def forward(self, x, target, text_inputs):
@@ -347,8 +352,10 @@ class Dense_CNN(nn.Module):
         x = self.word_rep(x, target, text_inputs)
         #print(x.shape)
         x = x.transpose(1, 2)
-        x = self.tcn(x)
+        #x = self.tcn(x)
         out = self.cnn(x)
-        loss = self.loss(out,target)
-        return out,loss
+        #print(out.shape)
+        x = out.transpose(1, 2)
+        y, loss = self.output_layer(x, target, text_inputs)
+        return y,loss
 
