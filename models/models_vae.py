@@ -387,56 +387,76 @@ class Text_CNN_VAE(nn.Module):
     def freeze_net(self):
         for p in self.word_rep.embed.parameters():
             p.requires_grad = False
+class DenseBlock(nn.Module):
+    def __init__(self,input_size,num_filters,kernel_size):
+        super(DenseBlock,self).__init__()
 
+        self.conv1= nn.Conv1d(input_size, num_filters, kernel_size=kernel_size, stride=1,padding=1)
+        self.relu1= nn.ReLU()
+        self.norm1= nn.BatchNorm1d(num_filters)
+    def forward(self, x):
+        out = self.norm1(self.relu1(self.conv1(x)))
+        return out
 import os
-from pytorch_pretrained_bert.modeling import BertLayerNorm
-from pytorch_pretrained_bert import BertModel, BertConfig
-class Bert_seq_cls(nn.Module):
+class Dense_VAE(nn.Module):
+    def __init__(self, args, Y, dicts,K=7):
+        super(Dense_VAE, self).__init__()
+        self.word_rep = WordRep(args, Y, dicts)
+        filters = [100]
+        dc =200
+        for i in range(2,K+1):
+            filters += [dc]
+            print(filters,sum(filters[:-1]))
+            self.add_module(f"block{i-2}",DenseBlock(sum(filters[:-1]),filters[i-1],3))
+        self.output_layer = OutputLayer(args, Y, dicts,dc)
+        latent_dim = dc
+        self.fc_mu = nn.Linear(dc , latent_dim)
+        self.fc_var = nn.Linear(dc, latent_dim)
+    def encode(self,x, target, text_inputs):
+        x = self.word_rep(x, target, text_inputs)
+        x = x.transpose(1, 2)
+        x1 = self.block0(x)
+        x2 = self.block1(torch.cat((x1,x),dim=1))
 
-    def __init__(self, args, Y):
-        super(Bert_seq_cls, self).__init__()
+        x3 = self.block2(torch.cat((x2,x1,x),dim=1))
+        x4 = self.block3(torch.cat((x3,x2,x1,x),dim=1))
+        x5 = self.block4(torch.cat((x4,x3,x2,x1,x),dim=1))
+        x6 = self.block5(torch.cat((x5,x4, x3, x2, x1, x), dim=1))
 
-        print("loading pretrained bert from {}".format(args.bert_dir))
-        config_file = os.path.join(args.bert_dir, 'bert_config.json')
-        self.config = BertConfig.from_json_file(config_file)
-        print("Model config {}".format(self.config))
-        self.bert = BertModel.from_pretrained(args.bert_dir)
+        #x6 = x6.transpose(1, 2)
+        result = torch.mean(x6,dim=-1)
+        var = self.fc_var(result)
+        mu = self.fc_mu(result)
+        return mu,var
 
-        self.dim_reduction = nn.Linear(self.config.hidden_size, args.num_filter_maps)
-        self.dropout = nn.Dropout(self.config.hidden_dropout_prob)
-        self.classifier = nn.Linear(args.num_filter_maps, Y)
-        self.apply(self.init_bert_weights)
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps.mul(std).add_(mu)
 
-    def forward(self, input_ids, token_type_ids, attention_mask, target):
-        _, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
-        x = self.dim_reduction(pooled_output)
-        x = self.dropout(x)
-        y = self.classifier(x)
 
-        loss = F.binary_cross_entropy_with_logits(y, target)
+    def decode(self,x,target, text_inputs):
+        y, loss = self.output_layer(x, target, text_inputs)
+        #print(f' before output {x.shape} out -> {y.shape} target {target.shape} l {loss_emb}')
         return y, loss
+    def forward(self, x, target, text_inputs):
 
-    def init_bert_weights(self, module):
 
-        if isinstance(module, (nn.Linear, nn.Embedding)):
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
-        elif isinstance(module, BertLayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
-        if isinstance(module, nn.Linear) and module.bias is not None:
-            module.bias.data.zero_()
+        mu,logvar = self.encode(x,target,text_inputs)
+        z = self.reparameterize(mu, logvar)
+        out, loss = self.decode(z,target,text_inputs)
+        loss_kl = get_kl_loss(mu, logvar)
+        return out,loss+0.001*loss_kl
 
-    def freeze_net(self):
-        pass
+
 
 
 def pick_model(args, dicts):
     Y = len(dicts['ind2c'])
 
-    if args.model == 'MultiResCNN':
-        model = LSTM_VAE(args, Y, dicts)
-    elif args.model == 'bert_seq_cls':
-        model = Bert_seq_cls(args, Y)
+    if args.model == 'Dense_VAE':
+        model = Dense_VAE(args, Y, dicts)
+
     else:
         raise RuntimeError("wrong model name")
 

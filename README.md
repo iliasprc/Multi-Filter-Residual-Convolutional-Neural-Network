@@ -71,6 +71,7 @@ python main_gan.py -data_path ./data/mimic3/train_50.csv -vocab ./data/mimic3/vo
 
  python main.py -data_path ./data/mimic3/train_50.csv -vocab ./data/mimic3/vocab.csv -Y 50 -model MultiHeadCNN -embed_file ./data/mimic3/processed_full.embed -criterion prec_at_5 -gpu 0 -tune_wordemb -n_epochs 200 -lr 0.001
 
+python main_vae.py -data_path ./data/mimic3/train_50.csv -vocab ./data/mimic3/vocab.csv -Y 50 -model MultiResCNN -embed_file ./data/mimic3/processed_full.embed -criterion prec_at_5 -gpu 0 -tune_wordemb
 
 Acknowledgement
 -----

@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from models.dense_models import Dense_CNN,TCN
+from models.ehr_dense_model import MultiScaleAtt
 import torch.nn.init
 from elmo.elmo import Elmo
 import json
@@ -432,6 +433,8 @@ def pick_model(args, dicts):
         model = Dense_CNN(args, Y, dicts)
     elif args.model =='TCN':
         model = TCN(args, Y, dicts)
+    elif args.model =='Ehr_Dense':
+        model = MultiScaleAtt(args, Y, dicts)
     elif args.model == 'bert_seq_cls':
         model = Bert_seq_cls(args, Y)
     else:

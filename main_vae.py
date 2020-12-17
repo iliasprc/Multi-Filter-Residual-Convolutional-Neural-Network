@@ -1,5 +1,5 @@
 
-from utils.options import args
+from utils.options_vae import args
 import random
 import numpy as np
 import torch
