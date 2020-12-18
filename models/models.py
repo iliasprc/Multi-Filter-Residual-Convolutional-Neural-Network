@@ -3,7 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from models.dense_models import Dense_CNN,TCN
-from models.ehr_dense_model import MultiScaleAtt
+from models.attn import Attn
+from models.ehr_dense_model import MultiScaleAttDense,ResDenseCNN
 import torch.nn.init
 from elmo.elmo import Elmo
 import json
@@ -340,10 +341,10 @@ class MultiResCNN(nn.Module):
                 one_channel.add_module('resconv-{}'.format(idx), tmp)
 
             self.conv.add_module('channel-{}'.format(filter_size), one_channel)
-        self.mapper = Mapper(self.filter_num * args.num_filter_maps, Y)
+
         self.output_layer = OutputLayer(args, Y, dicts, self.filter_num * args.num_filter_maps)
 
-        self.sim = nn.CosineEmbeddingLoss()
+
     def forward(self, x, target, text_inputs):
         #print(x.shape,text_inputs.shape,target.shape)
         x = self.word_rep(x, target, text_inputs)
@@ -434,7 +435,9 @@ def pick_model(args, dicts):
     elif args.model =='TCN':
         model = TCN(args, Y, dicts)
     elif args.model =='Ehr_Dense':
-        model = MultiScaleAtt(args, Y, dicts)
+        model = MultiScaleAttDense(args, Y, dicts)
+    elif args.model == 'ResDenseCNN':
+        model = ResDenseCNN(args, Y, dicts)
     elif args.model == 'bert_seq_cls':
         model = Bert_seq_cls(args, Y)
     else:

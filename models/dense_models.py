@@ -4,11 +4,11 @@ from torch import Tensor
 from typing import Any, List, Tuple
 import torch.nn.functional as F
 from collections import OrderedDict
-from models.tcn import TemporalConvNet,TemporalCnn
+# from models.tcn import TemporalConvNet,TemporalCnn
 import torch.nn.init
 from elmo.elmo import Elmo
 import json
-from models.attn import Attn
+# from models.attn import Attn
 from utils.utils import build_pretrain_embedding, load_embeddings
 from math import floor
 import math
@@ -364,4 +364,3 @@ class Dense_CNN(nn.Module):
         y = self.output_layer(x)
         loss = self.loss(y,target)
         return y,loss
-
