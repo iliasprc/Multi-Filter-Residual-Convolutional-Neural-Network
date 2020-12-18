@@ -8,6 +8,7 @@ from models.tcn import TemporalConvNet,TemporalCnn
 import torch.nn.init
 from elmo.elmo import Elmo
 import json
+from models.attn import Attn
 from utils.utils import build_pretrain_embedding, load_embeddings
 from math import floor
 import math
@@ -161,7 +162,7 @@ class _Transition(nn.Sequential):
         self.add_module('relu', nn.ReLU(inplace=True))
         self.add_module('conv', nn.Conv1d(num_input_features, num_output_features,
                                           kernel_size=1, stride=1, bias=False))
-        self.add_module('pool', nn.AvgPool1d(kernel_size=2, stride=2))
+        #self.add_module('pool', nn.MaxPool1d(kernel_size=2, stride=2))
 
 
 
@@ -196,11 +197,11 @@ class DenseNet(nn.Module):
 
         # First convolution
         self.features = nn.Sequential(OrderedDict([
-            ('conv0', nn.Conv1d(100, num_init_features, kernel_size=7, stride=2,
-                                padding=3, bias=False)),
+            ('conv0', nn.Conv1d(100, num_init_features, kernel_size=3, stride=1,
+                                padding=1, bias=False)),
             ('norm0', nn.BatchNorm1d(num_init_features)),
             ('relu0', nn.ReLU(inplace=True)),
-            ('pool0', nn.MaxPool1d(kernel_size=3, stride=2, padding=1)),
+            #('pool0', nn.MaxPool1d(kernel_size=2, stride=2, padding=1)),
         ]))
 
         # Each denseblock
@@ -225,6 +226,7 @@ class DenseNet(nn.Module):
         # Final batch norm
         self.features.add_module('norm5', nn.BatchNorm1d(num_features))
         self.avg_pool = torch.nn.AdaptiveAvgPool1d(1)
+
         # Linear layer
         self.final_num_features = num_features
         self.classifier = nn.Linear(num_features, num_classes)
@@ -288,7 +290,7 @@ def densenet100(pretrained: bool = False, progress: bool = True,num_classes=50, 
         memory_efficient (bool) - If True, uses checkpointing. Much more memory efficient,
           but slower. Default: *False*. See `"paper" <https://arxiv.org/pdf/1707.06990.pdf>`_.
     """
-    return _densenet('densenet100', 16, (6, 12, 24, 16), 128,num_classes, pretrained, progress,
+    return _densenet('densenet100', 32, (6, 6,6,6), 128,num_classes, pretrained, progress,
                      **kwargs)
 
 class OutputLayer(nn.Module):
@@ -307,11 +309,11 @@ class OutputLayer(nn.Module):
 
 
     def forward(self, x, target, text_inputs):
-        #print(f'Inside out layer {x.shape} x.transpose {x.transpose(1, 2).shape}')
+        print(f'Inside out layer {x.shape} x.transpose {x.transpose(1, 2).shape}')
         alpha = F.softmax(self.U.weight.matmul(x.transpose(1, 2)), dim=2)
         #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape}')
         m = alpha.matmul(x)
-        #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape} self.final.weight.mul(m) {self.final.weight.mul(m).sum(dim=2).shape}')
+        print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape} m {m.shape}')
         y = self.final.weight.mul(m).sum(dim=2).add(self.final.bias)
         #y = self.final(m.mean(dim=1))
 
@@ -342,9 +344,11 @@ class Dense_CNN(nn.Module):
         super(Dense_CNN, self).__init__()
         self.word_rep = WordRep(args, Y, dicts)
         #self.tcn = TemporalConvNet(100,[150,150,150,100])
-        self.cnn = densenet121()
+        self.cnn = densenet100()
         nf = self.cnn.final_num_features
-        self.output_layer = OutputLayer(args, Y, dicts, nf)
+        self.att = Attn('bmm',nf)
+        #self.output_layer = OutputLayer(args, Y, dicts, nf)
+        self.output_layer = nn.Linear(nf,Y)
         self.loss = nn.BCEWithLogitsLoss()
 
     def forward(self, x, target, text_inputs):
@@ -354,8 +358,10 @@ class Dense_CNN(nn.Module):
         x = x.transpose(1, 2)
         #x = self.tcn(x)
         out = self.cnn(x)
+        x = self.att(out.permute(0,2,1))
         #print(out.shape)
-        x = out.transpose(1, 2)
-        y, loss = self.output_layer(x, target, text_inputs)
+        #x = out.transpose(1, 2)
+        y = self.output_layer(x)
+        loss = self.loss(y,target)
         return y,loss
 

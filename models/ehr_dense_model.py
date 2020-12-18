@@ -74,8 +74,18 @@ class DenseBlock(nn.Module):
         self.conv1= nn.Conv1d(input_size, num_filters, kernel_size=kernel_size, stride=1,padding=1)
         self.relu1= nn.ReLU()
         self.norm1= nn.BatchNorm1d(num_filters)
+        self.drop = nn.Dropout(0.1)
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.constant_(m.bias, 0)
     def forward(self, x):
-        out = self.norm1(self.relu1(self.conv1(x)))
+        #self.norm1
+        out = self.drop(self.norm1(self.relu1(self.conv1(x))))
         return out
 class OutputLayer(nn.Module):
     def __init__(self, args, Y, dicts, input_size):
@@ -153,13 +163,15 @@ class MultiScaleAtt(nn.Module):
             filters += [dc]
             print(filters,sum(filters[:-1]))
             self.add_module(f"block{i-2}",DenseBlock(sum(filters[:-1]),filters[i-1],3))
-        self.att = Attn('bmm',200)
+            self.add_module(f"U{i-2}",nn.Linear(dc,Y))
+        #self.att = Attn('bmm',200)
+
         #self.output_layer = OutputLayer(args, Y, dicts,dc)
         self.output_layer = nn.Linear( dc,Y)
         self.loss_function = nn.BCEWithLogitsLoss()
     def forward(self, x, target, text_inputs):
         x = self.word_rep(x, target, text_inputs)
-        x = self.att1(x)
+        #x = self.att1(x)
         x = x.transpose(1, 2)
         #print(x.shape)
 
@@ -170,6 +182,13 @@ class MultiScaleAtt(nn.Module):
         x4 = self.block3(torch.cat((x3,x2,x1,x),dim=1))
         x5 = self.block4(torch.cat((x4,x3,x2,x1,x),dim=1))
         x6 = self.block5(torch.cat((x5,x4, x3, x2, x1, x), dim=1))
+        alpha1 = F.softmax(self.U0.weight.matmul(x1), dim=2).matmul(x1.transpose(1,2))
+        #print(alpha1.shape,x1.shape)
+        alpha2 = (F.softmax(self.U1.weight.matmul(x2), dim=2)).matmul(x2.transpose(1,2))
+        alpha3 = (F.softmax(self.U2.weight.matmul(x3), dim=2)).matmul(x3.transpose(1,2))
+        alpha4 = (F.softmax(self.U3.weight.matmul(x4), dim=2)).matmul(x4.transpose(1,2))
+        alpha5 = (F.softmax(self.U4.weight.matmul(x5), dim=2)).matmul(x5.transpose(1,2))
+        alpha6 = (F.softmax(self.U5.weight.matmul(x6), dim=2)).matmul(x6.transpose(1,2))
 
         # s1 = torch.sum(x1,dim=1)
         # s2 = torch.sum(x2, dim=1)
@@ -179,8 +198,8 @@ class MultiScaleAtt(nn.Module):
         #print(x6.shape)
         #x_cat = torch.stack((x1,x2,x3,x4,x5,x6),dim=-1)
         #print(x_cat.shape)
-        x6 = x6.permute(0,2,1)
-        c = self.att(x6)# +self.att(x1.permute(0,2,1)) + self.att(x2.permute(0,2,1)) + self.att(x3.permute(0,2,1)) + self.att(x4.permute(0,2,1)) + self.att(x5.permute(0,2,1))#,x6,x6)
+        #x6 = (x6).permute(0,2,1)
+        #c = self.att(x6) +self.att(x1.permute(0,2,1)) + self.att(x2.permute(0,2,1)) + self.att(x3.permute(0,2,1)) + self.att(x4.permute(0,2,1)) + self.att(x5.permute(0,2,1))#,x6,x6)
        # x_cat = x_cat.permute(1,0,2)
 
         #print(x_cat.shape)
@@ -189,9 +208,10 @@ class MultiScaleAtt(nn.Module):
         # out3, loss3 = self.output_layer(x3, target, text_inputs)
         # out, loss = self.output_layer(x4, target, text_inputs)
         # out, loss = self.output_layer(x5, target, text_inputs)
-        out = self.output_layer(c)
-        loss = self.loss_function(out,target)
-        return out,loss
+        y = self.output_layer.weight.mul((alpha1+alpha2+alpha3+alpha4+alpha5+alpha6)).sum(dim=2).add(self.output_layer.bias)
+        #out = self.output_layer(c)
+        loss = self.loss_function(y,target)
+        return y,loss
 
 class MultiScaleAttention(nn.Module):
     def __init__(self,K=6):

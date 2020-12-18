@@ -7,7 +7,7 @@ class Attn(nn.Module):
         super(Attn, self).__init__()
         self.method = method
         self.hidden_size = hidden_size
-        self.attn = nn.Linear(self.hidden_size , hidden_size)
+        self.attn = nn.Linear(self.hidden_size , hidden_size,bias=False)
         self.v = nn.Parameter(torch.rand(hidden_size))
         stdv = 1. / math.sqrt(self.v.size(0))
         self.v.data.normal_(mean=0, std=stdv)
