@@ -153,19 +153,27 @@ class Ehr_Dense_CNN(nn.Module):
 
 
 
-class MultiScaleAttDense(nn.Module):
-    def __init__(self, args, Y, dicts,K=7):
-        super(MultiScaleAttDense, self).__init__()
+class AttDense(nn.Module):
+    def __init__(self, args, Y, dicts,K=7,attn = 'bandanau'):
+        super(AttDense, self).__init__()
         self.word_rep = WordRep(args, Y, dicts)
         self.att1 = Attn('',100)
         filters = [100]
         dc =200
-        for i in range(2,K+1):
-            filters += [dc]
-            print(filters,sum(filters[:-1]))
-            self.add_module(f"block{i-2}",DenseBlock(sum(filters[:-1]),filters[i-1],3))
-            self.add_module(f"U{i-2}",nn.Linear(dc,Y))
-            #self.add_module(f"Y{i-2}",nn.Linear(dc,Y))
+        self.attn = attn
+        if attn == 'bandanau':
+            for i in range(2, K + 1):
+                filters += [dc]
+                print(filters, sum(filters[:-1]))
+                self.add_module(f"block{i - 2}", DenseBlock(sum(filters[:-1]), filters[i - 1], 3))
+                self.add_module(f"U{i - 2}", Attn('bmm', dc))
+        else:
+            for i in range(2,K+1):
+                filters += [dc]
+                print(filters,sum(filters[:-1]))
+                self.add_module(f"block{i-2}",DenseBlock(sum(filters[:-1]),filters[i-1],3))
+                self.add_module(f"U{i-2}",nn.Linear(dc,Y))
+
 
         #self.att = Attn('bmm',200)
 
@@ -185,15 +193,26 @@ class MultiScaleAttDense(nn.Module):
         x4 = self.block3(torch.cat((x3,x2,x1,x),dim=1))
         x5 = self.block4(torch.cat((x4,x3,x2,x1,x),dim=1))
         x6 = self.block5(torch.cat((x5,x4, x3, x2, x1, x), dim=1))
-        alpha1 = F.softmax(self.U0.weight.matmul(x1), dim=2).matmul(x1.transpose(1,2))
-        #print(alpha1.shape,x1.shape)
-        alpha2 = (F.softmax(self.U1.weight.matmul(x2), dim=2)).matmul(x2.transpose(1,2))
-        alpha3 = (F.softmax(self.U2.weight.matmul(x3), dim=2)).matmul(x3.transpose(1,2))
-        alpha4 = (F.softmax(self.U3.weight.matmul(x4), dim=2)).matmul(x4.transpose(1,2))
-        alpha5 = (F.softmax(self.U4.weight.matmul(x5), dim=2)).matmul(x5.transpose(1,2))
-        alpha6 = (F.softmax(self.U5.weight.matmul(x6), dim=2)).matmul(x6.transpose(1,2))
+        if self.attn == 'bandanau':
+            alpha1 = self.U0(x1.transpose(1,2))
+            # print(alpha1.shape,x1.shape)
+            alpha2 = self.U0(x2.transpose(1,2))
+            alpha3 = self.U0(x3.transpose(1,2))
+            alpha4 = self.U0(x4.transpose(1,2))
+            alpha5 = self.U0(x5.transpose(1,2))
+            alpha6 = self.U0(x6.transpose(1,2))
+            #print(alpha1.shape)
+            y = self.output_layer((alpha1+alpha2+alpha3+alpha4+alpha5+alpha6))
+        else:
+            alpha1 = F.softmax(self.U0.weight.matmul(x1), dim=2).matmul(x1.transpose(1,2))
+            #print(alpha1.shape,x1.shape)
+            alpha2 = (F.softmax(self.U1.weight.matmul(x2), dim=2)).matmul(x2.transpose(1,2))
+            alpha3 = (F.softmax(self.U2.weight.matmul(x3), dim=2)).matmul(x3.transpose(1,2))
+            alpha4 = (F.softmax(self.U3.weight.matmul(x4), dim=2)).matmul(x4.transpose(1,2))
+            alpha5 = (F.softmax(self.U4.weight.matmul(x5), dim=2)).matmul(x5.transpose(1,2))
+            alpha6 = (F.softmax(self.U5.weight.matmul(x6), dim=2)).matmul(x6.transpose(1,2))
 
-        # s1 = torch.sum(x1,dim=1)
+            # s1 = torch.sum(x1,dim=1)
         # s2 = torch.sum(x2, dim=1)
         # s3 = torch.sum(x3, dim=1)
         # s4 = torch.sum(x4, dim=1)
@@ -211,7 +230,90 @@ class MultiScaleAttDense(nn.Module):
         # out3, loss3 = self.output_layer(x3, target, text_inputs)
         # out, loss = self.output_layer(x4, target, text_inputs)
         # out, loss = self.output_layer(x5, target, text_inputs)
-        y = self.output_layer.weight.mul((alpha1+alpha2+alpha3+alpha4+alpha5+alpha6)).sum(dim=2).add(self.output_layer.bias)
+            print(alpha1.shape)
+            y = self.output_layer.weight.mul((alpha1+alpha2+alpha3+alpha4+alpha5+alpha6)).sum(dim=2).add(self.output_layer.bias)
+        #out = self.output_layer(c)
+        loss = self.loss_function(y,target)
+        return y,loss
+
+
+
+class MultiScaleAttDense(nn.Module):
+    def __init__(self, args, Y, dicts,K=7,attn = 'bandanau'):
+        super(MultiScaleAttDense, self).__init__()
+        self.word_rep = WordRep(args, Y, dicts)
+        self.att1 = Attn('',100)
+        filters = [100]
+        dc =200
+        self.attn = attn
+        if attn == 'bandanau':
+            for i in range(2, K + 1):
+                filters += [dc]
+                print(filters, sum(filters[:-1]))
+                self.add_module(f"block{i - 2}", DenseBlock(sum(filters[:-1]), filters[i - 1], 3))
+            self.multi_att = MultiScaleAttention(K-1)
+            self.U = nn.Linear(dc,Y)
+        else:
+            for i in range(2,K+1):
+                filters += [dc]
+                print(filters,sum(filters[:-1]))
+                self.add_module(f"block{i-2}",DenseBlock(sum(filters[:-1]),filters[i-1],3))
+                self.add_module(f"U{i-2}",nn.Linear(dc,Y))
+
+
+
+        self.output_layer = nn.Linear( dc,Y)
+        self.loss_function = nn.BCEWithLogitsLoss()
+    def forward(self, x, target, text_inputs):
+        x = self.word_rep(x, target, text_inputs)
+        #x = self.att1(x)
+        x = x.transpose(1, 2)
+        #print(x.shape)
+
+        x1 = self.block0(x)
+        x2 = self.block1(torch.cat((x1,x),dim=1))
+
+        x3 = self.block2(torch.cat((x2,x1,x),dim=1))
+        x4 = self.block3(torch.cat((x3,x2,x1,x),dim=1))
+        x5 = self.block4(torch.cat((x4,x3,x2,x1,x),dim=1))
+        x6 = self.block5(torch.cat((x5,x4, x3, x2, x1, x), dim=1))
+        if self.attn == 'bandanau':
+            concat = torch.stack((x1,x2,x3,x4,x5,x6),dim=-1)
+            x_attn = self.multi_att(concat)#.transpose(1,2)
+            #print(self.output_layer.weight.shape,x_attn.shape)
+            alpha = F.softmax(self.U.weight.matmul(x_attn.transpose(1,2)), dim=2).matmul(x_attn)
+            #print(f"alpha {alpha.shape}")
+            y =  self.output_layer.weight.mul(alpha).sum(dim=2).add(self.output_layer.bias)
+            #print(f"y {y.shape}")
+        else:
+            alpha1 = F.softmax(self.U0.weight.matmul(x1), dim=2).matmul(x1.transpose(1,2))
+            #print(alpha1.shape,x1.shape)
+            alpha2 = (F.softmax(self.U1.weight.matmul(x2), dim=2)).matmul(x2.transpose(1,2))
+            alpha3 = (F.softmax(self.U2.weight.matmul(x3), dim=2)).matmul(x3.transpose(1,2))
+            alpha4 = (F.softmax(self.U3.weight.matmul(x4), dim=2)).matmul(x4.transpose(1,2))
+            alpha5 = (F.softmax(self.U4.weight.matmul(x5), dim=2)).matmul(x5.transpose(1,2))
+            alpha6 = (F.softmax(self.U5.weight.matmul(x6), dim=2)).matmul(x6.transpose(1,2))
+
+            # s1 = torch.sum(x1,dim=1)
+        # s2 = torch.sum(x2, dim=1)
+        # s3 = torch.sum(x3, dim=1)
+        # s4 = torch.sum(x4, dim=1)
+        # s5 = torch.sum(x5, dim=1)
+        #print(x6.shape)
+        #x_cat = torch.stack((x1,x2,x3,x4,x5,x6),dim=-1)
+        #print(x_cat.shape)
+        #x6 = (x6).permute(0,2,1)
+        #c = self.att(x6) +self.att(x1.permute(0,2,1)) + self.att(x2.permute(0,2,1)) + self.att(x3.permute(0,2,1)) + self.att(x4.permute(0,2,1)) + self.att(x5.permute(0,2,1))#,x6,x6)
+       # x_cat = x_cat.permute(1,0,2)
+
+        #print(x_cat.shape)
+        # out1 , loss1= self.output_layer(x1,target, text_inputs)
+        # out2, loss2 = self.output_layer(x2, target, text_inputs)
+        # out3, loss3 = self.output_layer(x3, target, text_inputs)
+        # out, loss = self.output_layer(x4, target, text_inputs)
+        # out, loss = self.output_layer(x5, target, text_inputs)
+            print(alpha1.shape)
+            y = self.output_layer.weight.mul((alpha1+alpha2+alpha3+alpha4+alpha5+alpha6)).sum(dim=2).add(self.output_layer.bias)
         #out = self.output_layer(c)
         loss = self.loss_function(y,target)
         return y,loss
@@ -315,15 +417,21 @@ class ResDenseCNN(nn.Module):
 class MultiScaleAttention(nn.Module):
     def __init__(self,K=6):
         super(MultiScaleAttention,self).__init__()
-        self.mlp = nn.Sequential(nn.Linear(K,1),nn.Softmax(dim=-1))
+        self.mlp = nn.Linear(K,K)
 
     def forward(self,x):
+        #print(f"x {x.shape}")
+        # X shape Batch x NumWords X Filters X Layers
         s = torch.sum(x,dim=1)
-        print(s.shape)
-        a = self.mlp(s)
-        print(f"a {a.shape} s {s.shape} x {x.shape}")
-        x_attn = torch.sum(torch.matmul(a,torch.sum(x,dim=-1)),dim=-1)
-        print(x_attn.shape)
+        #print(f"s {s.shape}")
+        # S shape Batch x NumWords X  Layers
+        #print(s.shape)
+        a = F.softmax(self.mlp(s),dim=-1).unsqueeze(1)
+        # A shape Batch x NumWords X  1
+        # Softmax
+        #print(f"a {a.shape} s {s.shape} x {x.shape}")
+        x_attn = torch.sum(a*x,dim=-1).transpose(1,2)
+        #print(f"x attn {x_attn.shape}")
 
         return x_attn
 

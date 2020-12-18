@@ -44,7 +44,7 @@ class Attn(nn.Module):
         v = self.v.repeat(encoder_outputs.data.shape[0], 1).unsqueeze(1)  # [B*1*H]
         energy = torch.bmm(v, energy)  # [B*1*T]
         return energy.squeeze(1)  # [B*T]
-
-m = Attn('',100)
-inp = torch.randn(8,1000,100)
-out = m(inp)
+#
+# m = Attn('',100)
+# inp = torch.randn(8,1000,100)
+# out = m(inp)

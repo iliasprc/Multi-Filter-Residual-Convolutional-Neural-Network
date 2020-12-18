@@ -158,9 +158,9 @@ class OutputLayer(nn.Module):
 
 
     def forward(self, x, target, text_inputs):
-        #print(f'Inside out layer {x.shape} x.transpose {x.transpose(1, 2).shape}')
+        print(f'Inside out layer x {x.shape} x.transpose {x.transpose(1, 2).shape}')
         alpha = F.softmax(self.U.weight.matmul(x.transpose(1, 2)), dim=2)
-        #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape}')
+        print(f'alpha {alpha.shape} x {x.shape} self.U.weight. {self.U.weight.shape}')
         m = alpha.matmul(x)
         #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape} self.final.weight.mul(m) {self.final.weight.mul(m).sum(dim=2).shape}')
         y = self.final.weight.mul(m).sum(dim=2).add(self.final.bias)
@@ -362,7 +362,7 @@ class MultiResCNN(nn.Module):
             tmp = tmp.transpose(1, 2)
             conv_result.append(tmp)
         x = torch.cat(conv_result, dim=2)
-        embeds = self.mapper(target)
+        #embeds = self.mapper(target)
         #print(embeds.shape)
         #x_embeds = x.mean(dim=1)
         #print(x_embeds.shape)
