@@ -7,7 +7,7 @@ from elmo.elmo import Elmo
 import json
 from utils.utils import build_pretrain_embedding, load_embeddings
 from math import floor
-
+from models.dense_models import densenet100,densenet121
 
 class Mapper(nn.Module):
     def __init__(self,hidden_size=300,n_classes=50):
@@ -448,15 +448,156 @@ class Dense_VAE(nn.Module):
         loss_kl = get_kl_loss(mu, logvar)
         return out,loss+0.001*loss_kl
 
+class DenseNet_VAE(nn.Module):
+    def __init__(self,args, Y, dicts):
+        super(DenseNet_VAE, self).__init__()
+        self.word_rep = WordRep(args, Y, dicts)
+        #self.tcn = TemporalConvNet(100,[150,150,150,100])
+        self.cnn = densenet100()
+        nf = self.cnn.final_num_features
 
 
+        self.output_layer = nn.Linear(nf,Y)
+        self.loss = nn.BCEWithLogitsLoss()
+
+        latent_dim = nf
+        self.fc_mu = nn.Linear(nf , latent_dim)
+        self.fc_var = nn.Linear(nf, latent_dim)
+    def encode(self,x, target, text_inputs):
+        x = self.word_rep(x, target, text_inputs)
+        #print(x.shape)
+        x = x.transpose(1, 2)
+        #x = self.tcn(x)
+        out = self.cnn(x)
+
+        #x6 = x6.transpose(1, 2)
+        result = torch.mean(out,dim=-1)
+        var = self.fc_var(result)
+        mu = self.fc_mu(result)
+        return mu,var
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps.mul(std).add_(mu)
+
+
+    def decode(self,x,target, text_inputs):
+        y= self.output_layer(x)
+        loss = self.loss(y, target)
+        #print(f' before output {x.shape} out -> {y.shape} target {target.shape} l {loss_emb}')
+        return y, loss
+    def forward(self, x, target, text_inputs):
+
+
+        mu,logvar = self.encode(x,target,text_inputs)
+        z = self.reparameterize(mu, logvar)
+        out, loss = self.decode(z,target,text_inputs)
+        loss_kl = get_kl_loss(mu, logvar)
+        return out,loss+0.001*loss_kl
+
+
+
+
+class MultiScaleAttVAE(nn.Module):
+    def __init__(self, args, Y, dicts,K=7,attn = 'bandanau'):
+        super(MultiScaleAttVAE, self).__init__()
+        self.word_rep = WordRep(args, Y, dicts)
+
+        filters = [100]
+        dc =200
+        self.attn = attn
+        if attn == 'bandanau':
+            for i in range(2, K + 1):
+                filters += [dc]
+                print(filters, sum(filters[:-1]))
+                self.add_module(f"block{i - 2}", DenseBlock(sum(filters[:-1]), filters[i - 1], 3))
+            self.multi_att = MultiScaleAttention(K-1)
+            self.U = nn.Linear(dc,dc)
+        else:
+            for i in range(2,K+1):
+                filters += [dc]
+                print(filters,sum(filters[:-1]))
+                self.add_module(f"block{i-2}",DenseBlock(sum(filters[:-1]),filters[i-1],3))
+                self.add_module(f"U{i-2}",nn.Linear(dc,Y))
+
+        self.latent_dim = dc
+        self.fc_latent = nn.Linear(dc,self.latent_dim)
+        self.output_layer = nn.Linear( self.latent_dim//2,Y)
+        self.loss_function = nn.BCEWithLogitsLoss()
+    def encode(self,x, target, text_inputs):
+        x = self.word_rep(x, target, text_inputs)
+        x = x.transpose(1, 2)
+        x1 = self.block0(x)
+        x2 = self.block1(torch.cat((x1,x),dim=1))
+
+        x3 = self.block2(torch.cat((x2,x1,x),dim=1))
+        x4 = self.block3(torch.cat((x3,x2,x1,x),dim=1))
+        x5 = self.block4(torch.cat((x4,x3,x2,x1,x),dim=1))
+        x6 = self.block5(torch.cat((x5,x4, x3, x2, x1, x), dim=1))
+
+        #x6 = x6.transpose(1, 2)
+        concat = torch.stack((x1, x2, x3, x4, x5, x6), dim=-1)
+        x_attn = self.multi_att(concat)  # .transpose(1,2)
+
+        alpha = F.softmax(self.U.weight.matmul(x_attn.transpose(1, 2)), dim=2).matmul(x_attn)
+        #print(f"alpha {alpha.shape}")
+        y = self.fc_latent.weight.mul(alpha).sum(dim=2).add(self.fc_latent.bias)
+        var = y[:,:self.latent_dim//2]
+        mu = y[:,self.latent_dim//2:]
+        return mu,var
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps.mul(std).add_(mu)
+    def decode(self,x,target, text_inputs):
+        #print(x.shape)
+        y = self.output_layer(x)#, target, text_inputs)
+        #print(f' before output {x.shape} out -> {y.shape} target {target.shape} l {loss_emb}')
+        return y, self.loss_function(y,target)
+
+    def forward(self, x, target, text_inputs):
+
+        mu, logvar = self.encode(x, target, text_inputs)
+        z = self.reparameterize(mu, logvar)
+        out, loss = self.decode(z, target, text_inputs)
+        loss_kl = get_kl_loss(mu, logvar)/z.shape[0]
+        #print(f"loss {loss.item()} kl {loss_kl.item()}")
+        return out, loss + 0.01 * loss_kl
+
+
+
+class MultiScaleAttention(nn.Module):
+    def __init__(self,K=6):
+        super(MultiScaleAttention,self).__init__()
+        self.mlp = nn.Linear(K,K)
+
+    def forward(self,x):
+        #print(f"x {x.shape}")
+        # X shape Batch x NumWords X Filters X Layers
+        s = torch.sum(x,dim=1)
+        #print(f"s {s.shape}")
+        # S shape Batch x NumWords X  Layers
+        #print(s.shape)
+        a = F.softmax(self.mlp(s),dim=-1).unsqueeze(1)
+        # A shape Batch x NumWords X  1
+        # Softmax
+        #print(f"a {a.shape} s {s.shape} x {x.shape}")
+        x_attn = torch.sum(a*x,dim=-1).transpose(1,2)
+        #print(f"x attn {x_attn.shape}")
+
+        return x_attn
 
 def pick_model(args, dicts):
     Y = len(dicts['ind2c'])
 
     if args.model == 'Dense_VAE':
         model = Dense_VAE(args, Y, dicts)
-
+    elif args.model =="MultiScaleAttVAE":
+        model = MultiScaleAttVAE(args,Y,dicts)
+    elif args.model== 'DenseNet_VAE':
+        model = DenseNet_VAE(args,Y,dicts)
     else:
         raise RuntimeError("wrong model name")
 
