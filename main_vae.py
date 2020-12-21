@@ -13,7 +13,7 @@ from collections import defaultdict
 from torch.utils.data import DataLoader
 import os
 import time
-from tests.train_test import train, test
+from tests.train_text_vae import train_vae, test_vae
 from pytorch_pretrained_bert import BertAdam
 
 if __name__ == "__main__":
@@ -105,7 +105,7 @@ if __name__ == "__main__":
 
         if not test_only:
             epoch_start = time.time()
-            losses = train(args, model, optimizer, epoch, args.gpu, train_loader)
+            losses = train_vae(args, model, optimizer, epoch, args.gpu, train_loader)
             loss = np.mean(losses)
             epoch_finish = time.time()
             print("epoch finish in %.2fs, loss: %.4f" % (epoch_finish - epoch_start, loss))
@@ -121,11 +121,11 @@ if __name__ == "__main__":
 
         # test on dev
         evaluation_start = time.time()
-        metrics = test(args, model, args.data_path, fold, args.gpu, dicts, dev_loader)
+        metrics = test_vae(args, model, args.data_path, fold, args.gpu, dicts, dev_loader)
         evaluation_finish = time.time()
         print("evaluation finish in %.2fs" % (evaluation_finish - evaluation_start))
         if test_only or epoch == args.n_epochs - 1:
-            metrics_te = test(args, model, args.data_path, "test", args.gpu, dicts, test_loader)
+            metrics_te = test_vae(args, model, args.data_path, "test", args.gpu, dicts, test_loader)
         else:
             metrics_te = defaultdict(float)
         metrics_tr = {'loss': loss}

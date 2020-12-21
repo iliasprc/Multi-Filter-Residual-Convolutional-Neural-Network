@@ -7,8 +7,8 @@ def train_gan(args, model_g,model_d, optimizer_g,optimizer_d, epoch, gpu, data_l
 
     losses = []
 
-    model_d.train()
-    model_g.train()
+    model_d.train_vae()
+    model_g.train_vae()
     d_loss = 0
     g_loss = 0
     # loader

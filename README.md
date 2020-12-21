@@ -76,3 +76,8 @@ python main_vae.py -data_path ./data/mimic3/train_50.csv -vocab ./data/mimic3/vo
 Acknowledgement
 -----
 We thank all the people that provide their code to help us complete this project.
+
+
+
+
+ python main.py -data_path ./data/mimic3/train_50.csv -vocab ./data/mimic3/vocab.csv -Y 50 -model Ehr_Dense -embed_file ./data/mimic3/processed_full.embed -criterion prec_at_5 -gpu 0 -tune_wordemb -n_epochs 200 -lr 0.001

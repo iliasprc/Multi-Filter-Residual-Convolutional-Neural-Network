@@ -298,10 +298,10 @@ class LSTM_CNN_VAE(nn.Module):
         for p in self.word_rep.embed.parameters():
             p.requires_grad = False
 
-class Text_CNN_VAE(nn.Module):
+class Residual_VAE(nn.Module):
 
     def __init__(self, args, Y, dicts):
-        super( Text_CNN_VAE, self).__init__()
+        super( Residual_VAE, self).__init__()
 
         self.word_rep = WordRep(args, Y, dicts)
 
@@ -325,7 +325,7 @@ class Text_CNN_VAE(nn.Module):
 
             self.conv.add_module('channel-{}'.format(filter_size), one_channel)
 
-        self.output_layer = DecoderOutputLayer(args, Y, dicts, self.filter_num * args.num_filter_maps)
+        self.output_layer = OutputLayer(args, Y, dicts, self.filter_num * args.num_filter_maps)
         latent_dim = self.filter_num * args.num_filter_maps
         self.fc_mu = nn.Linear(self.filter_num * args.num_filter_maps , latent_dim)
         self.fc_var = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
@@ -333,6 +333,8 @@ class Text_CNN_VAE(nn.Module):
         #xavier_uniform(self.V_attention.weight)
         xavier_uniform(self.fc_var.weight)
         xavier_uniform(self.fc_mu.weight)
+        self.U = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
+        xavier_uniform(self.U.weight)
         #self.vae_fc = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
         self.recloss = nn.MSELoss()
     def encode(self, x, target, text_inputs):
@@ -355,10 +357,13 @@ class Text_CNN_VAE(nn.Module):
         #print(x.shape)
         # alpha = F.softmax(self.V_attention(x),dim=2)
         # x = alpha*x
-
-        result = x#torch.mean(x,dim=1)
-        mu = self.fc_mu(result)
-        log_var = self.fc_var(result)
+        alpha = F.softmax(self.U.weight.matmul(x.transpose(1, 2)), dim=2)
+        #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape}')
+        m = alpha.matmul(x)
+        result = m#torch.mean(x,dim=1)
+        mu = self.fc_mu.weight.mul(m).sum(dim=2).add(self.fc_mu.bias)
+        log_var = self.fc_var.weight.mul(m).sum(dim=2).add(self.fc_mu.bias)
+        #print(f"mu {mu.shape} logvar {log_var.shape}")
         return mu,log_var,embeds
 
     def reparameterize(self, mu, logvar):
@@ -375,14 +380,14 @@ class Text_CNN_VAE(nn.Module):
         mu,logvar ,embeds= self.encode(x,target,text_inputs)
         z = self.reparameterize(mu, logvar)
         #print(z.shape)
-        len = z.shape[1]*z.shape[0]
+        len = z.shape[0]
         y, loss = self.decode(z, target, text_inputs)
         reconstructedemb = self.emd_decoder(z)
-        lossrec = self.recloss(reconstructedemb,embeds)
+        #lossrec = self.recloss(reconstructedemb,embeds)
         loss_kl = get_kl_loss(mu,logvar)/len
         #print(f'loss {loss.item()} loss kl {loss_kl.item()} re {lossrec.item()}')
         #print(f' before output {x.shape} out -> {y.shape} target {target.shape} l {loss_emb}')
-        return y, loss +0.01*loss_kl+lossrec
+        return y, [loss ,loss_kl]
 
     def freeze_net(self):
         for p in self.word_rep.embed.parameters():
@@ -457,12 +462,13 @@ class DenseNet_VAE(nn.Module):
         nf = self.cnn.final_num_features
 
 
-        self.output_layer = nn.Linear(nf,Y)
-        self.loss = nn.BCEWithLogitsLoss()
 
-        latent_dim = nf
+
+        latent_dim = nf//2
         self.fc_mu = nn.Linear(nf , latent_dim)
         self.fc_var = nn.Linear(nf, latent_dim)
+        self.output_layer = nn.Linear(latent_dim,Y)
+        self.loss = nn.BCEWithLogitsLoss()
     def encode(self,x, target, text_inputs):
         x = self.word_rep(x, target, text_inputs)
         #print(x.shape)
@@ -483,6 +489,7 @@ class DenseNet_VAE(nn.Module):
 
 
     def decode(self,x,target, text_inputs):
+        #print(x.shape)
         y= self.output_layer(x)
         loss = self.loss(y, target)
         #print(f' before output {x.shape} out -> {y.shape} target {target.shape} l {loss_emb}')
@@ -493,9 +500,81 @@ class DenseNet_VAE(nn.Module):
         mu,logvar = self.encode(x,target,text_inputs)
         z = self.reparameterize(mu, logvar)
         out, loss = self.decode(z,target,text_inputs)
-        loss_kl = get_kl_loss(mu, logvar)
-        return out,loss+0.001*loss_kl
+        loss_kl = get_kl_loss(mu, logvar)/z.shape[0]
+        return out,[loss,loss_kl]
 
+
+class MultiAttVAE(nn.Module):
+    def __init__(self, args, Y, dicts,K=7,attn = 'bandanau'):
+        super(MultiAttVAE, self).__init__()
+        self.word_rep = WordRep(args, Y, dicts)
+
+        filters = [100]
+        dc =200
+        self.attn = attn
+        self.latent_dim = dc //2
+        if attn == 'bandanau':
+            for i in range(2, K + 1):
+                filters += [dc]
+                print(filters, sum(filters[:-1]))
+                self.add_module(f"block{i - 2}", DenseBlock(sum(filters[:-1]), filters[i - 1], 3))
+                self.add_module(f"U{i - 2}",nn.Linear(dc,self.latent_dim))
+            #self.multi_att = MultiScaleAttention(K-1)
+            #self.U = nn.Linear(dc,dc)
+        else:
+            for i in range(2,K+1):
+                filters += [dc]
+                print(filters,sum(filters[:-1]))
+                self.add_module(f"block{i-2}",DenseBlock(sum(filters[:-1]),filters[i-1],3))
+                self.add_module(f"U{i-2}",nn.Linear(dc,Y))
+
+        self.fc_mu = nn.Linear(self.latent_dim, self.latent_dim)
+        self.fc_var = nn.Linear(self.latent_dim, self.latent_dim)
+        self.output_layer = nn.Linear( self.latent_dim,Y)
+        self.loss_function = nn.BCEWithLogitsLoss()
+    def encode(self,x, target, text_inputs):
+        x = self.word_rep(x, target, text_inputs)
+        x = x.transpose(1, 2)
+        x1 = self.block0(x)
+        x2 = self.block1(torch.cat((x1,x),dim=1))
+
+        x3 = self.block2(torch.cat((x2,x1,x),dim=1))
+        x4 = self.block3(torch.cat((x3,x2,x1,x),dim=1))
+        x5 = self.block4(torch.cat((x4,x3,x2,x1,x),dim=1))
+        x6 = self.block5(torch.cat((x5,x4, x3, x2, x1, x), dim=1))
+
+        alpha1 = F.softmax(self.U0.weight.matmul(x1), dim=2).matmul(x1.transpose(1, 2))
+        # print(alpha1.shape,x1.shape)
+        alpha2 = (F.softmax(self.U1.weight.matmul(x2), dim=2)).matmul(x2.transpose(1, 2))
+        alpha3 = (F.softmax(self.U2.weight.matmul(x3), dim=2)).matmul(x3.transpose(1, 2))
+        alpha4 = (F.softmax(self.U3.weight.matmul(x4), dim=2)).matmul(x4.transpose(1, 2))
+        alpha5 = (F.softmax(self.U4.weight.matmul(x5), dim=2)).matmul(x5.transpose(1, 2))
+        alpha6 = (F.softmax(self.U5.weight.matmul(x6), dim=2)).matmul(x6.transpose(1, 2))
+        print(f"alpha {alpha1.shape} {self.fc_mu.weight.mul(alpha1).shape}")
+        y = self.fc_mu.weight.mul(alpha1).sum(dim=1).add(self.fc_mu.bias)
+        print(y.shape)
+        var = y[:,:self.latent_dim//2]
+        mu = y[:,self.latent_dim//2:]
+        return mu,var
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps.mul(std).add_(mu)
+    def decode(self,x,target, text_inputs):
+        #print(x.shape)
+        y = self.output_layer(x)#, target, text_inputs)
+        #print(f' before output {x.shape} out -> {y.shape} target {target.shape} l {loss_emb}')
+        return y, self.loss_function(y,target)
+
+    def forward(self, x, target, text_inputs):
+
+        mu, logvar = self.encode(x, target, text_inputs)
+        z = self.reparameterize(mu, logvar)
+        out, loss = self.decode(z, target, text_inputs)
+        loss_kl = get_kl_loss(mu, logvar)/z.shape[0]
+        #print(f"loss {loss.item()} kl {loss_kl.item()}")
+        return out, [loss , loss_kl]
 
 
 
@@ -505,7 +584,7 @@ class MultiScaleAttVAE(nn.Module):
         self.word_rep = WordRep(args, Y, dicts)
 
         filters = [100]
-        dc =200
+        dc = 100
         self.attn = attn
         if attn == 'bandanau':
             for i in range(2, K + 1):
@@ -564,7 +643,7 @@ class MultiScaleAttVAE(nn.Module):
         out, loss = self.decode(z, target, text_inputs)
         loss_kl = get_kl_loss(mu, logvar)/z.shape[0]
         #print(f"loss {loss.item()} kl {loss_kl.item()}")
-        return out, loss + 0.01 * loss_kl
+        return out, [loss , loss_kl]
 
 
 
@@ -594,10 +673,14 @@ def pick_model(args, dicts):
 
     if args.model == 'Dense_VAE':
         model = Dense_VAE(args, Y, dicts)
+    elif args.model == 'Residual_VAE':
+        model = Residual_VAE(args,Y,dicts)
     elif args.model =="MultiScaleAttVAE":
         model = MultiScaleAttVAE(args,Y,dicts)
     elif args.model== 'DenseNet_VAE':
         model = DenseNet_VAE(args,Y,dicts)
+    elif args.model == 'MultiAttVAE':
+        model = MultiAttVAE(args,Y,dicts)
     else:
         raise RuntimeError("wrong model name")
 

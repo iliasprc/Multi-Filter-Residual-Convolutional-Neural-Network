@@ -10,7 +10,7 @@ def train(args, model, optimizer, epoch, gpu, data_loader):
     losses = []
 
 
-    model.train()
+    model.train_vae()
 
     # loader
     data_iter = iter(data_loader)
@@ -40,6 +40,7 @@ def train(args, model, optimizer, epoch, gpu, data_loader):
                 inputs_id, labels, text_inputs = inputs_id.cuda(gpu), labels.cuda(gpu), text_inputs.cuda(gpu)
 
             output, loss = model(inputs_id, labels, text_inputs)
+
 
         optimizer.zero_grad()
         loss.backward()

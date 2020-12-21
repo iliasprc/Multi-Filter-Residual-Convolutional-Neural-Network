@@ -3,18 +3,20 @@ import torch
 import numpy as np
 from utils.utils import all_metrics, print_metrics
 
-def train(args, model, optimizer, epoch, gpu, data_loader):
+def train_vae(args, model, optimizer, epoch, gpu, data_loader):
 
     print("EPOCH %d" % epoch)
 
     losses = []
-
+    kl_losses = 0.
+    bce_losses = 0.
 
     model.train()
 
     # loader
     data_iter = iter(data_loader)
     num_iter = len(data_loader)
+    print(num_iter)
     for i in range(num_iter):
 
         if args.model.find("bert") != -1:
@@ -40,7 +42,12 @@ def train(args, model, optimizer, epoch, gpu, data_loader):
                 inputs_id, labels, text_inputs = inputs_id.cuda(gpu), labels.cuda(gpu), text_inputs.cuda(gpu)
 
             output, loss = model(inputs_id, labels, text_inputs)
+            kl_losses+=loss[1].item()
+            bce_losses+=loss[0].item()
 
+            if i % 10 ==0:
+                print(f"BCE {bce_losses/(i+1):.4f} Loss KL {kl_losses/(i+1):.4f} ")
+            loss = loss[0] + 0.001*loss[1]
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -49,7 +56,7 @@ def train(args, model, optimizer, epoch, gpu, data_loader):
 
     return losses
 
-def test(args, model, data_path, fold, gpu, dicts, data_loader):
+def test_vae(args, model, data_path, fold, gpu, dicts, data_loader):
 
     filename = data_path.replace('train', fold)
     print('file for evaluation: %s' % filename)
@@ -86,6 +93,7 @@ def test(args, model, data_path, fold, gpu, dicts, data_loader):
                     inputs_id, labels, text_inputs = inputs_id.cuda(gpu), labels.cuda(gpu), text_inputs.cuda(gpu)
 
                 output, loss = model(inputs_id, labels, text_inputs)
+                loss = loss[0] + 0.001 * loss[1]
 
             output = torch.sigmoid(output)
             output = output.data.cpu().numpy()
