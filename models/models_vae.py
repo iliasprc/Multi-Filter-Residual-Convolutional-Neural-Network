@@ -8,7 +8,8 @@ import json
 from utils.utils import build_pretrain_embedding, load_embeddings
 from math import floor
 from models.dense_models import densenet100,densenet121
-
+from models.ehr_dense_model import DenseBlock
+from models.attention import AttnDecoderRNN,Decoder
 class Mapper(nn.Module):
     def __init__(self,hidden_size=300,n_classes=50):
         super(Mapper, self).__init__()
@@ -87,8 +88,6 @@ class OutputLayer(nn.Module):
     def __init__(self, args, Y, dicts, input_size):
         super(OutputLayer, self).__init__()
 
-        self.U = nn.Linear(input_size, Y)
-        xavier_uniform(self.U.weight)
 
 
         self.final = nn.Linear(input_size, Y)
@@ -166,47 +165,6 @@ class ResidualBlock(nn.Module):
         return out
 
 
-class LSTM_VAE(nn.Module):
-    def __init__(self, args, Y, dicts):
-        super(LSTM_VAE, self).__init__()
-        self.word_rep = WordRep(args, Y, dicts)
-        hidden_size = 300
-        self.rnn = nn.LSTM(input_size=100,hidden_size=hidden_size,num_layers=2,batch_first=True,bidirectional=True)
-        dim = 2*hidden_size
-        latent_dim = hidden_size
-        self.fc_mu = nn.Linear(dim  , latent_dim)
-        self.fc_var = nn.Linear(dim , latent_dim)
-        self.classifier = nn.Linear(latent_dim, Y)
-        self.loss_function = nn.BCEWithLogitsLoss()
-    def encode(self, x, target, text_inputs):
-        x = self.word_rep(x, target, text_inputs)
-        out,(h,c) = self.rnn(x)
-        mu = self.fc_mu(out[:,-1,:])
-        log_var = self.fc_var(out[:,-1,:])
-        return mu,log_var
-
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return eps.mul(std).add_(mu)
-
-    def decode(self,x,target, text_inputs):
-        y= self.classifier(x)
-        loss = self.loss_function(y, target)
-        #print(f' before output {x.shape} out -> {y.shape} target {target.shape} l {loss_emb}')
-        return y, loss
-    def forward(self, x, target, text_inputs):
-        #print(x.shape,text_inputs.shape,target.shape)
-        mu,logvar= self.encode(x,target,text_inputs)
-        z = self.reparameterize(mu, logvar)
-
-        y, loss = self.decode(z, target, text_inputs)
-
-
-        loss_kl = get_kl_loss(mu,logvar)
-        #print(f'loss {loss.item()} loss kl {loss_kl.item()} ')
-        #print(f' before output {x.shape} out -> {y.shape} target {target.shape} l {loss_emb}')
-        return y, loss +loss_kl
 
 class LSTM_CNN_VAE(nn.Module):
 
@@ -300,7 +258,7 @@ class LSTM_CNN_VAE(nn.Module):
 
 class Residual_VAE(nn.Module):
 
-    def __init__(self, args, Y, dicts):
+    def __init__(self, args, Y, dicts,att=True):
         super( Residual_VAE, self).__init__()
 
         self.word_rep = WordRep(args, Y, dicts)
@@ -325,18 +283,24 @@ class Residual_VAE(nn.Module):
 
             self.conv.add_module('channel-{}'.format(filter_size), one_channel)
 
-        self.output_layer = OutputLayer(args, Y, dicts, self.filter_num * args.num_filter_maps)
-        latent_dim = self.filter_num * args.num_filter_maps
+
+        latent_dim = self.filter_num * args.num_filter_maps//2
         self.fc_mu = nn.Linear(self.filter_num * args.num_filter_maps , latent_dim)
         self.fc_var = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
-        self.emd_decoder = nn.Sequential(nn.Linear(latent_dim,latent_dim),nn.LeakyReLU(),nn.Dropout(0.2),nn.Linear(latent_dim, 100))
+        self.output_layer = OutputLayer(args, Y, dicts, latent_dim)
+        #self.emd_decoder = nn.Sequential(nn.Linear(latent_dim,latent_dim),nn.LeakyReLU(),nn.Dropout(0.2),nn.Linear(latent_dim, 100))
         #xavier_uniform(self.V_attention.weight)
         xavier_uniform(self.fc_var.weight)
         xavier_uniform(self.fc_mu.weight)
-        self.U = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
-        xavier_uniform(self.U.weight)
+        self.att = att
+        if self.att:
+            self.U = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
+            xavier_uniform(self.U.weight)
+        else:
+            self.pool = nn.AdaptiveMaxPool1d(1)
         #self.vae_fc = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
-        self.recloss = nn.MSELoss()
+        #self.recloss = nn.MSELoss()
+
     def encode(self, x, target, text_inputs):
         x = self.word_rep(x, target, text_inputs)
         #print(x.shape)
@@ -351,20 +315,31 @@ class Residual_VAE(nn.Module):
                     tmp = torch.tanh(md(tmp))
                 else:
                     tmp = md(tmp)
+            #print('conv ,',conv,'\n ',tmp.shape)
             tmp = tmp.transpose(1, 2)
             conv_result.append(tmp)
         x = torch.cat(conv_result, dim=2)
         #print(x.shape)
         # alpha = F.softmax(self.V_attention(x),dim=2)
         # x = alpha*x
-        alpha = F.softmax(self.U.weight.matmul(x.transpose(1, 2)), dim=2)
-        #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape}')
-        m = alpha.matmul(x)
-        result = m#torch.mean(x,dim=1)
-        mu = self.fc_mu.weight.mul(m).sum(dim=2).add(self.fc_mu.bias)
-        log_var = self.fc_var.weight.mul(m).sum(dim=2).add(self.fc_mu.bias)
+        if self.att:
+            alpha = F.softmax(self.U.weight.matmul(x.transpose(1, 2)), dim=2)
+            #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape}')
+            m = alpha.matmul(x)
+            result = m#torch.mean(x,dim=1) self.fc_mu.weight.t().matmul(m).sum(dim=2).add(self.fc_mu.bias).shape
+            #print(self.fc_var.weight.shape,self.fc_mu.bias.shape,m.shape,(self.fc_var.weight*m).sum(dim=2).add(self.fc_mu.bias).shape)
+            mu = (self.fc_mu.weight*m).sum(dim=2).add(self.fc_mu.bias)#self.fc_mu.weight.mul(m).sum(dim=2).add(self.fc_mu.bias)
+            log_var = (self.fc_var.weight*m).sum(dim=2).add(self.fc_var.bias)#self.fc_var.weight.mul(m).sum(dim=2).add(self.fc_mu.bias)
         #print(f"mu {mu.shape} logvar {log_var.shape}")
-        return mu,log_var,embeds
+        else:
+            #print(x.shape)
+
+            #
+            # ,dim=1)
+            x = self.pool(x.transpose(1, 2)).squeeze(-1)
+            mu = self.fc_mu(x)
+            log_var = self.fc_var(x)
+        return mu,log_var
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -377,32 +352,407 @@ class Residual_VAE(nn.Module):
         return y, loss
     def forward(self, x, target, text_inputs):
         #print(x.shape,text_inputs.shape,target.shape)
-        mu,logvar ,embeds= self.encode(x,target,text_inputs)
+        mu,logvar = self.encode(x,target,text_inputs)
         z = self.reparameterize(mu, logvar)
         #print(z.shape)
         len = z.shape[0]
         y, loss = self.decode(z, target, text_inputs)
-        reconstructedemb = self.emd_decoder(z)
-        #lossrec = self.recloss(reconstructedemb,embeds)
+
         loss_kl = get_kl_loss(mu,logvar)/len
-        #print(f'loss {loss.item()} loss kl {loss_kl.item()} re {lossrec.item()}')
-        #print(f' before output {x.shape} out -> {y.shape} target {target.shape} l {loss_emb}')
+
         return y, [loss ,loss_kl]
 
     def freeze_net(self):
         for p in self.word_rep.embed.parameters():
             p.requires_grad = False
-class DenseBlock(nn.Module):
-    def __init__(self,input_size,num_filters,kernel_size):
-        super(DenseBlock,self).__init__()
 
-        self.conv1= nn.Conv1d(input_size, num_filters, kernel_size=kernel_size, stride=1,padding=1)
-        self.relu1= nn.ReLU()
-        self.norm1= nn.BatchNorm1d(num_filters)
-    def forward(self, x):
-        out = self.norm1(self.relu1(self.conv1(x)))
-        return out
-import os
+class Seq2Seq_VAE(nn.Module):
+
+    def __init__(self, args, Y, dicts,att=False):
+        super(Seq2Seq_VAE, self).__init__()
+
+        self.word_rep = WordRep(args, Y, dicts)
+
+        self.conv = nn.ModuleList()
+        filter_sizes = args.filter_size.split(',')
+
+        self.filter_num = len(filter_sizes)
+        for filter_size in filter_sizes:
+            filter_size = int(filter_size)
+            one_channel = nn.ModuleList()
+            tmp = nn.Conv1d(self.word_rep.feature_size, self.word_rep.feature_size, kernel_size=filter_size,
+                            padding=int(floor(filter_size / 2)))
+            xavier_uniform(tmp.weight)
+            one_channel.add_module('baseconv', tmp)
+
+            conv_dimension = self.word_rep.conv_dict[args.conv_layer]
+            for idx in range(args.conv_layer):
+                tmp = ResidualBlock(conv_dimension[idx], conv_dimension[idx + 1], filter_size, 1, True,
+                                    args.dropout)
+                one_channel.add_module('resconv-{}'.format(idx), tmp)
+
+            self.conv.add_module('channel-{}'.format(filter_size), one_channel)
+
+
+        latent_dim = self.filter_num * args.num_filter_maps//2
+        self.fc_mu = nn.Linear(self.filter_num * args.num_filter_maps , latent_dim)
+        self.fc_var = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
+        self.output_layer = OutputLayer(args, Y, dicts, latent_dim)
+        self.num_layers = 2
+        self.hidden_size = latent_dim
+        self.decoder = nn.LSTM(input_size=latent_dim,hidden_size=latent_dim,num_layers=self.num_layers,bidirectional=False,dropout=0.3)
+        self.decoder_fc = nn.Sequential(nn.Linear(latent_dim,latent_dim),nn.ReLU(),nn.Dropout(0.2),nn.Linear(latent_dim,100))
+        self.latent_dim = latent_dim
+        xavier_uniform(self.fc_var.weight)
+        xavier_uniform(self.fc_mu.weight)
+        self.att = att
+        if self.att:
+            self.U = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
+            xavier_uniform(self.U.weight)
+        else:
+            self.pool = nn.AdaptiveMaxPool1d(1)
+        #self.vae_fc = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
+        self.recloss = nn.MSELoss()
+
+    def encode(self, x, target, text_inputs):
+        x = self.word_rep(x, target, text_inputs)
+        #print(x.shape)
+        embeds = x
+        x = x.transpose(1, 2)
+
+        conv_result = []
+        for conv in self.conv:
+            tmp = x
+            for idx, md in enumerate(conv):
+                if idx == 0:
+                    tmp = torch.tanh(md(tmp))
+                else:
+                    tmp = md(tmp)
+            #print('conv ,',conv,'\n ',tmp.shape)
+            tmp = tmp.transpose(1, 2)
+            conv_result.append(tmp)
+        x = torch.cat(conv_result, dim=2)
+        #print(x.shape)
+        # alpha = F.softmax(self.V_attention(x),dim=2)
+        # x = alpha*x
+        if self.att:
+            alpha = F.softmax(self.U.weight.matmul(x.transpose(1, 2)), dim=2)
+            #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape}')
+            m = alpha.matmul(x)
+            result = m#torch.mean(x,dim=1) self.fc_mu.weight.t().matmul(m).sum(dim=2).add(self.fc_mu.bias).shape
+            #print(self.fc_var.weight.shape,self.fc_mu.bias.shape,m.shape,(self.fc_var.weight*m).sum(dim=2).add(self.fc_mu.bias).shape)
+            mu = (self.fc_mu.weight*m).sum(dim=2).add(self.fc_mu.bias)#self.fc_mu.weight.mul(m).sum(dim=2).add(self.fc_mu.bias)
+            log_var = (self.fc_var.weight*m).sum(dim=2).add(self.fc_var.bias)#self.fc_var.weight.mul(m).sum(dim=2).add(self.fc_mu.bias)
+        #print(f"mu {mu.shape} logvar {log_var.shape}")
+        else:
+            #print(x.shape)
+
+            #
+            # ,dim=1)
+            #with torch.no_grad():
+            means,vars = self.fc_mu(x),self.fc_var(x)
+            x = self.pool(x.transpose(1, 2)).squeeze(-1)
+            mu = self.fc_mu(x)
+            log_var = self.fc_var(x)
+        return mu,log_var,embeds,means,vars
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps.mul(std).add_(mu)
+
+    def decode(self,zetas,x,target, text_inputs,length = 2500):
+        y, loss = self.output_layer(x, target, text_inputs)
+        outs,j = self.decoder(zetas)
+
+        reconstructed = self.decoder_fc(outs)
+
+
+        return y, loss,reconstructed
+    def forward(self, x, target, text_inputs):
+        #print(x.shape,text_inputs.shape,target.shape)
+        len = x.shape[-1]
+        mu,logvar ,embeds,means,vars= self.encode(x,target,text_inputs)
+        z = self.reparameterize(mu, logvar)
+        #with torch.no_grad():
+        zetas = self.reparameterize(means,vars)
+        #print(z.shape)
+        #len = z.shape[0]
+        y, loss,reconstructed = self.decode(zetas,z, target, text_inputs,len)
+        #print(reconstructed.shape,embeds.shape)
+        loss_kl = get_kl_loss(mu,logvar)/len
+        loss_rec = self.recloss (reconstructed,embeds)
+
+
+        return y, [loss ,loss_kl+loss_rec]
+
+    def freeze_net(self):
+        for p in self.word_rep.embed.parameters():
+            p.requires_grad = False
+
+# class Seq2Seq_VAE(nn.Module):
+#
+#     def __init__(self, args, Y, dicts,att=True):
+#         super(Seq2Seq_VAE, self).__init__()
+#
+#         self.word_rep = WordRep(args, Y, dicts)
+#
+#         self.conv = nn.ModuleList()
+#         filter_sizes = args.filter_size.split(',')
+#
+#         self.filter_num = len(filter_sizes)
+#         for filter_size in filter_sizes:
+#             filter_size = int(filter_size)
+#             one_channel = nn.ModuleList()
+#             tmp = nn.Conv1d(self.word_rep.feature_size, self.word_rep.feature_size, kernel_size=filter_size,
+#                             padding=int(floor(filter_size / 2)))
+#             xavier_uniform(tmp.weight)
+#             one_channel.add_module('baseconv', tmp)
+#
+#             conv_dimension = self.word_rep.conv_dict[args.conv_layer]
+#             for idx in range(args.conv_layer):
+#                 tmp = ResidualBlock(conv_dimension[idx], conv_dimension[idx + 1], filter_size, 1, True,
+#                                     args.dropout)
+#                 one_channel.add_module('resconv-{}'.format(idx), tmp)
+#
+#             self.conv.add_module('channel-{}'.format(filter_size), one_channel)
+#
+#
+#         latent_dim = self.filter_num * args.num_filter_maps//2
+#         self.fc_mu = nn.Linear(self.filter_num * args.num_filter_maps , latent_dim)
+#         self.fc_var = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
+#         self.output_layer = OutputLayer(args, Y, dicts, latent_dim)
+#         self.num_layers =3
+#         self.hidden_size = latent_dim
+#         self.decoder = nn.LSTM(input_size=latent_dim,hidden_size=latent_dim,num_layers=self.num_layers,bidirectional=False,dropout=0.2)
+#         self.decoder_fc = nn.Sequential(nn.Linear(latent_dim,latent_dim),nn.LeakyReLU(),nn.Dropout(0.1),nn.Linear(latent_dim,100))
+#         self.latent_dim = latent_dim
+#         xavier_uniform(self.fc_var.weight)
+#         xavier_uniform(self.fc_mu.weight)
+#         self.att = att
+#         if self.att:
+#             self.U = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
+#             xavier_uniform(self.U.weight)
+#         else:
+#             self.pool = nn.AdaptiveMaxPool1d(1)
+#         #self.vae_fc = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
+#         self.recloss = nn.MSELoss()
+#
+#     def encode(self, x, target, text_inputs):
+#         x = self.word_rep(x, target, text_inputs)
+#         #print(x.shape)
+#         embeds = x
+#         x = x.transpose(1, 2)
+#
+#         conv_result = []
+#         for conv in self.conv:
+#             tmp = x
+#             for idx, md in enumerate(conv):
+#                 if idx == 0:
+#                     tmp = torch.tanh(md(tmp))
+#                 else:
+#                     tmp = md(tmp)
+#             #print('conv ,',conv,'\n ',tmp.shape)
+#             tmp = tmp.transpose(1, 2)
+#             conv_result.append(tmp)
+#         x = torch.cat(conv_result, dim=2)
+#         #print(x.shape)
+#         # alpha = F.softmax(self.V_attention(x),dim=2)
+#         # x = alpha*x
+#         if self.att:
+#             alpha = F.softmax(self.U.weight.matmul(x.transpose(1, 2)), dim=2)
+#             #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape}')
+#             m = alpha.matmul(x)
+#             result = m#torch.mean(x,dim=1) self.fc_mu.weight.t().matmul(m).sum(dim=2).add(self.fc_mu.bias).shape
+#             #print(self.fc_var.weight.shape,self.fc_mu.bias.shape,m.shape,(self.fc_var.weight*m).sum(dim=2).add(self.fc_mu.bias).shape)
+#             mu = (self.fc_mu.weight*m).sum(dim=2).add(self.fc_mu.bias)#self.fc_mu.weight.mul(m).sum(dim=2).add(self.fc_mu.bias)
+#             log_var = (self.fc_var.weight*m).sum(dim=2).add(self.fc_var.bias)#self.fc_var.weight.mul(m).sum(dim=2).add(self.fc_mu.bias)
+#         #print(f"mu {mu.shape} logvar {log_var.shape}")
+#         else:
+#             #print(x.shape)
+#
+#             #
+#             # ,dim=1)
+#             x = self.pool(x.transpose(1, 2)).squeeze(-1)
+#             mu = self.fc_mu(x)
+#             log_var = self.fc_var(x)
+#         return mu,log_var,embeds
+#
+#     def reparameterize(self, mu, logvar):
+#         std = torch.exp(0.5 * logvar)
+#         eps = torch.randn_like(std)
+#         return eps.mul(std).add_(mu)
+#
+#     def decode(self,x,target, text_inputs,length = 2500):
+#         y, loss = self.output_layer(x, target, text_inputs)
+#         out = x.unsqueeze(0)
+#
+#         h =  F.tanh(torch.randn(self.num_layers,out.shape[1],self.hidden_size)).cuda()
+#         c = F.tanh(torch.randn(self.num_layers,out.shape[1],self.hidden_size)).cuda()
+#         outputs = []
+#         for i in range(length):
+#             out , (h,c) = self.decoder(out,(h,c))
+#
+#             outputs.append(out)
+#         outs = torch.cat(outputs,dim=0).permute(1,0,2)
+#         reconstructed = self.decoder_fc(outs)
+#
+#
+#         return y, loss,reconstructed
+#     def forward(self, x, target, text_inputs):
+#         #print(x.shape,text_inputs.shape,target.shape)
+#         len = x.shape[-1]
+#         mu,logvar ,embeds= self.encode(x,target,text_inputs)
+#         z = self.reparameterize(mu, logvar)
+#         #print(z.shape)
+#         #len = z.shape[0]
+#         y, loss,reconstructed = self.decode(z, target, text_inputs,len)
+#         #print(reconstructed.shape,embeds.shape)
+#         loss_kl = get_kl_loss(mu,logvar)/len
+#         loss_rec = self.recloss (reconstructed,embeds)
+#
+#
+#         return y, [loss ,loss_kl+loss_rec]
+#
+#     def freeze_net(self):
+#         for p in self.word_rep.embed.parameters():
+#             p.requires_grad = False
+
+
+
+
+class AttSeq2Seq_VAE(nn.Module):
+
+    def __init__(self, args, Y, dicts,att=True):
+        super(AttSeq2Seq_VAE, self).__init__()
+
+        self.word_rep = WordRep(args, Y, dicts)
+
+        self.conv = nn.ModuleList()
+        filter_sizes = args.filter_size.split(',')
+
+        self.filter_num = len(filter_sizes)
+        for filter_size in filter_sizes:
+            filter_size = int(filter_size)
+            one_channel = nn.ModuleList()
+            tmp = nn.Conv1d(self.word_rep.feature_size, self.word_rep.feature_size, kernel_size=filter_size,
+                            padding=int(floor(filter_size / 2)))
+            xavier_uniform(tmp.weight)
+            one_channel.add_module('baseconv', tmp)
+
+            conv_dimension = self.word_rep.conv_dict[args.conv_layer]
+            for idx in range(args.conv_layer):
+                tmp = ResidualBlock(conv_dimension[idx], conv_dimension[idx + 1], filter_size, 1, True,
+                                    args.dropout)
+                one_channel.add_module('resconv-{}'.format(idx), tmp)
+
+            self.conv.add_module('channel-{}'.format(filter_size), one_channel)
+        latent_dim = self.filter_num * args.num_filter_maps//2
+        self.num_layers =1
+        self.hidden_size = latent_dim
+
+        self.latent_dim = latent_dim
+
+        self.fc_mu = nn.Linear(self.filter_num * args.num_filter_maps , latent_dim)
+        self.fc_var = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
+        self.decoder =  AttnDecoderRNN( input_size= latent_dim,hidden_size=self.hidden_size, output_size=100)
+        self.output_layer = OutputLayer(args, Y, dicts, latent_dim)
+
+        xavier_uniform(self.fc_var.weight)
+        xavier_uniform(self.fc_mu.weight)
+        self.att = att
+        if self.att:
+            self.U = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
+            xavier_uniform(self.U.weight)
+        else:
+            self.pool = nn.AdaptiveMaxPool1d(1)
+        #self.vae_fc = nn.Linear(self.filter_num * args.num_filter_maps, latent_dim)
+        self.recloss = nn.MSELoss()
+
+    def encode(self, x, target, text_inputs):
+        x = self.word_rep(x, target, text_inputs)
+        #print(x.shape)
+        embeds = x
+        x = x.transpose(1, 2)
+
+        conv_result = []
+        for conv in self.conv:
+            tmp = x
+            for idx, md in enumerate(conv):
+                if idx == 0:
+                    tmp = torch.tanh(md(tmp))
+                else:
+                    tmp = md(tmp)
+            #print('conv ,',conv,'\n ',tmp.shape)
+            tmp = tmp.transpose(1, 2)
+            conv_result.append(tmp)
+        x = torch.cat(conv_result, dim=2)
+        #print(x.shape)
+        # alpha = F.softmax(self.V_attention(x),dim=2)
+        # x = alpha*x
+        if self.att:
+            alpha = F.softmax(self.U.weight.matmul(x.transpose(1, 2)), dim=2)
+            #print(f'alpha {alpha.shape} x {x.shape} x.transpose {x.transpose(1, 2).shape}')
+            m = alpha.matmul(x)
+            result = m#torch.mean(x,dim=1) self.fc_mu.weight.t().matmul(m).sum(dim=2).add(self.fc_mu.bias).shape
+            #print(self.fc_var.weight.shape,self.fc_mu.bias.shape,m.shape,(self.fc_var.weight*m).sum(dim=2).add(self.fc_mu.bias).shape)
+            mu = (self.fc_mu.weight*m).sum(dim=2).add(self.fc_mu.bias)#self.fc_mu.weight.mul(m).sum(dim=2).add(self.fc_mu.bias)
+            log_var = (self.fc_var.weight*m).sum(dim=2).add(self.fc_var.bias)#self.fc_var.weight.mul(m).sum(dim=2).add(self.fc_mu.bias)
+        #print(f"mu {mu.shape} logvar {log_var.shape}")
+        else:
+            #print(x.shape)
+
+            #
+            # ,dim=1)
+            x = self.pool(x.transpose(1, 2)).squeeze(-1)
+            mu = self.fc_mu(x)
+            log_var = self.fc_var(x)
+        return mu,log_var,embeds,x
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps.mul(std).add_(mu)
+
+    def decode(self,x,target, text_inputs,encoder_outputs,length = 2500):
+        y, loss = self.output_layer(x, target, text_inputs)
+        out = x.unsqueeze(0)
+        B = x.shape[0]
+        h =  F.tanh(torch.randn(self.num_layers,out.shape[1],self.hidden_size)).cuda()
+        c = F.tanh(torch.randn(self.num_layers,out.shape[1],self.hidden_size)).cuda()
+        outputs = []
+        dec_input = x
+        last_context = torch.zeros(B,self.hidden_size).cuda()
+        last_hidden = torch.zeros(1,B,self.hidden_size).cuda()
+        encoder_outputs = encoder_outputs.permute(1,0,2)
+        for i in range(length):
+            out, last_context, last_hidden, attn_weights= self.decoder(dec_input, last_context, last_hidden, encoder_outputs)
+
+            outputs.append(out)
+        outs = torch.cat(outputs,dim=0).permute(1,0,2)
+        reconstructed = outs
+
+
+        return y, loss,reconstructed
+    def forward(self, x, target, text_inputs):
+        #print(x.shape,text_inputs.shape,target.shape)
+        len = x.shape[-1]
+        mu,log_var,embeds,encoder_outputs= self.encode(x,target,text_inputs)
+        z = self.reparameterize(mu, log_var)
+        #print(z.shape)
+        #len = z.shape[0]
+        y, loss,reconstructed = self.decode(z, target, text_inputs,encoder_outputs,len)
+        #print(reconstructed.shape,embeds.shape)
+        loss_kl = get_kl_loss(mu,log_var)/len
+        loss_rec = self.recloss (reconstructed,embeds)
+
+
+        return y, [loss ,loss_kl+loss_rec]
+
+    def freeze_net(self):
+        for p in self.word_rep.embed.parameters():
+            p.requires_grad = False
+
 class Dense_VAE(nn.Module):
     def __init__(self, args, Y, dicts,K=7):
         super(Dense_VAE, self).__init__()
@@ -519,8 +869,8 @@ class MultiAttVAE(nn.Module):
                 print(filters, sum(filters[:-1]))
                 self.add_module(f"block{i - 2}", DenseBlock(sum(filters[:-1]), filters[i - 1], 3))
                 self.add_module(f"U{i - 2}",nn.Linear(dc,self.latent_dim))
-            #self.multi_att = MultiScaleAttention(K-1)
-            #self.U = nn.Linear(dc,dc)
+
+
         else:
             for i in range(2,K+1):
                 filters += [dc]
@@ -681,6 +1031,10 @@ def pick_model(args, dicts):
         model = DenseNet_VAE(args,Y,dicts)
     elif args.model == 'MultiAttVAE':
         model = MultiAttVAE(args,Y,dicts)
+    elif args.model == 'Seq2Seq_VAE':
+        model = Seq2Seq_VAE(args,Y,dicts)
+    elif args.model == 'AttSeq2Seq_VAE':
+        model = AttSeq2Seq_VAE(args,Y,dicts)
     else:
         raise RuntimeError("wrong model name")
 

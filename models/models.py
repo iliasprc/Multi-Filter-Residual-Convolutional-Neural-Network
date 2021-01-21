@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from models.dense_models import Dense_CNN,TCN
-from models.attn import Attn
+from models.attention import Attention
 from models.ehr_dense_model import MultiScaleAttDense,ResDenseCNN
 import torch.nn.init
 from elmo.elmo import Elmo

@@ -14,7 +14,7 @@ parser.add_argument("-version", type=str, choices=['mimic2', 'mimic3'], default=
 parser.add_argument("-MAX_LENGTH", type=int, default=2500)
 
 # model
-parser.add_argument("-model", type=str, choices=['CNN', 'Residual_VAE','Dense_VAE','MultiScaleAttVAE','DenseNet_VAE','MultiAttVAE'], default='MultiScaleAttVAE')
+parser.add_argument("-model", type=str, choices=['CNN', 'Residual_VAE','AttSeq2Seq_VAE','Seq2Seq_VAE','Dense_VAE','MultiScaleAttVAE','DenseNet_VAE','MultiAttVAE'], default='Residual_VAE')
 parser.add_argument("-filter_size", type=str, default="3,5,9,15,19,25")
 parser.add_argument("-num_filter_maps", type=int, default=50)
 parser.add_argument("-conv_layer", type=int, default=1)

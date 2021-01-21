@@ -4,7 +4,7 @@ from torch import Tensor
 from typing import Any, List, Tuple
 import torch.nn.functional as F
 from collections import OrderedDict
-from models.attn import Attn
+from models.attention import Attention
 import torch.nn.init
 from elmo.elmo import Elmo
 import json
@@ -157,7 +157,7 @@ class AttDense(nn.Module):
     def __init__(self, args, Y, dicts,K=7,attn = 'bandanau'):
         super(AttDense, self).__init__()
         self.word_rep = WordRep(args, Y, dicts)
-        self.att1 = Attn('',100)
+        self.att1 = Attention('', 100)
         filters = [100]
         dc =200
         self.attn = attn
@@ -166,7 +166,7 @@ class AttDense(nn.Module):
                 filters += [dc]
                 print(filters, sum(filters[:-1]))
                 self.add_module(f"block{i - 2}", DenseBlock(sum(filters[:-1]), filters[i - 1], 3))
-                self.add_module(f"U{i - 2}", Attn('bmm', dc))
+                self.add_module(f"U{i - 2}", Attention('bmm', dc))
         else:
             for i in range(2,K+1):
                 filters += [dc]
@@ -242,7 +242,7 @@ class MultiScaleAttDense(nn.Module):
     def __init__(self, args, Y, dicts,K=7,attn = 'bandanau'):
         super(MultiScaleAttDense, self).__init__()
         self.word_rep = WordRep(args, Y, dicts)
-        self.att1 = Attn('',100)
+        self.att1 = Attention('', 100)
         filters = [100]
         dc =200
         self.attn = attn
